@@ -22,7 +22,7 @@ async def lifespan(app: FastAPI):
         client.close()
 
 
-app = FastAPI(title="MediBridge AI Backend", lifespan=lifespan)
+app = FastAPI(title="Dodam AI Backend", lifespan=lifespan)
 register_error_handlers(app)
 app.include_router(ai_result_document_router)
 

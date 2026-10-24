@@ -50,7 +50,6 @@ class OpenAiCompatibleLlmClient:
             request_kwargs = {
                 "model": self._settings.llm_model,
                 "temperature": self._settings.llm_temperature,
-                "response_format": {"type": "json_object"},
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},

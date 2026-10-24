@@ -46,7 +46,7 @@ class GenerateResultDocumentUseCase:
                 blocked=True,
                 block_reason="UNSUPPORTED_QUESTION",
                 user_message=(
-                    "검사 결과 비교, 문서 설명, 복약 정보, 일정 확인처럼 "
+                    "아이의 검사 결과 비교, 진료 문서 설명, 처방 기록, 다음 진료 일정처럼 "
                     "의료기록에서 확인 가능한 질문으로 바꿔 주세요."
                 ),
             )
@@ -56,7 +56,7 @@ class GenerateResultDocumentUseCase:
                 question_type=question_type,
                 blocked=False,
                 result_status="INSUFFICIENT",
-                user_message="답변에 사용할 수 있는 의료문서 또는 건강기록 근거를 찾지 못했어요.",
+                user_message="아이의 의료문서 또는 건강기록에서 답변 근거를 찾지 못했어요.",
             )
 
         try:
@@ -78,9 +78,11 @@ class GenerateResultDocumentUseCase:
 
     @staticmethod
     def _system_prompt(question_type: QuestionType) -> str:
-        return f"""당신은 SilverCare의 의료기록 설명 도우미입니다.
+        return f"""당신은 MediBridge의 영유아·어린이 의료기록 설명 도우미입니다. 부모가 아이의 진료기록을 이해하도록 쉬운 한국어로 설명하세요.
 질문 유형은 {question_type.value}입니다.
 제공된 근거에 없는 사실, 진단 확정, 약 변경·중단, 치료 결정을 절대 생성하지 마세요.
+아이의 나이·체중·발달 단계가 근거에 없으면 추측하지 마세요. 성인 정상 범위를 소아 기준처럼 적용하지 마세요.
+복용량, 예방접종 일정, 응급 여부는 근거만으로 확정하지 말고 담당 소아청소년과에 확인하도록 안내하세요.
 수치·단위·날짜는 제공된 값 그대로 사용하세요.
 답변의 모든 문장은 citation_ids로 제공된 근거를 하나 이상 인용해야 합니다.
 반드시 title, answer, sentences 배열을 가진 JSON만 반환하세요.

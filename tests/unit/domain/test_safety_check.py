@@ -28,3 +28,19 @@ def test_diagnosis_document_explanation_is_allowed(question: str) -> None:
 )
 def test_medical_decision_request_is_blocked(question: str) -> None:
     assert SafetyCheck().classify(question) is QuestionType.MEDICAL_DECISION_REQUEST
+
+
+def test_urgent_child_symptom_returns_immediate_emergency_guidance() -> None:
+    question = "아이가 경련하면서 숨을 못 쉬어요"
+
+    assert SafetyCheck().classify(question) is QuestionType.MEDICAL_DECISION_REQUEST
+    message = SafetyCheck.user_message(question)
+    assert "119" in message
+    assert "응급실" in message
+
+
+def test_non_urgent_medical_decision_uses_dodam_guardrail_tone() -> None:
+    message = SafetyCheck.user_message("해열제 먹여도 괜찮을까요?")
+
+    assert "도담이는" in message
+    assert "소아청소년과" in message

@@ -16,10 +16,15 @@ class QuestionClassifier:
             return QuestionType.LAB_REFERENCE_RANGE
         if any(word in text for word in ("약", "복용", "처방")):
             return QuestionType.MEDICATION_SUMMARY
-        if any(word in text for word in ("재진", "일정", "검사 언제", "예약")):
+        if any(word in text for word in ("재진", "일정", "검사 언제", "예약", "예방접종", "접종")):
             return QuestionType.FOLLOW_UP_SCHEDULE
         if any(word in text for word in ("근거", "원문", "몇 쪽", "출처")):
             return QuestionType.SOURCE_LOOKUP
-        if any(word in text for word in ("설명", "쉽게", "소견서", "진단서", "문서")):
+        explanation_words = (
+            "설명", "쉽게", "소견서", "진단서", "문서", "기록", "결과", "알려", "무슨 뜻", "궁금"
+        )
+        if any(word in text for word in explanation_words):
+            return QuestionType.DOCUMENT_EASY_EXPLANATION
+        if any(word in text for word in ("아이", "아기", "우리 애", "우리애", "도담")):
             return QuestionType.DOCUMENT_EASY_EXPLANATION
         return QuestionType.UNSUPPORTED

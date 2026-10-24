@@ -1,1 +1,1 @@
-"""SilverCare AI 서버 애플리케이션 패키지."""
+"""MediBridge AI 서버 애플리케이션 패키지."""

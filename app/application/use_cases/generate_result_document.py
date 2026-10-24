@@ -78,7 +78,7 @@ class GenerateResultDocumentUseCase:
 
     @staticmethod
     def _system_prompt(question_type: QuestionType) -> str:
-        return f"""당신은 SilverCare의 의료기록 설명 도우미입니다.
+        return f"""당신은 MediBridge의 의료기록 설명 도우미입니다.
 질문 유형은 {question_type.value}입니다.
 제공된 근거에 없는 사실, 진단 확정, 약 변경·중단, 치료 결정을 절대 생성하지 마세요.
 수치·단위·날짜는 제공된 값 그대로 사용하세요.

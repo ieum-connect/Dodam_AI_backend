@@ -50,11 +50,18 @@ class OpenAiCompatibleLlmClient:
             request_kwargs = {
                 "model": self._settings.llm_model,
                 "temperature": self._settings.llm_temperature,
-                "response_format": {"type": "json_object"},
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "grounded_answer",
+                        "strict": True,
+                        "schema": GeneratedAnswer.model_json_schema(),
+                    },
+                },
             }
             # Gemini OpenAI 호환 API는 OpenAI 전용 reasoning_effort를 받지 않는다.
             if self._settings.llm_provider != "gemini_openai_compatible":
@@ -86,7 +93,10 @@ class OpenAiCompatibleLlmClient:
                 AiResultErrorCode.AI_RESPONSE_INVALID, retryable=True
             )
         try:
-            return GeneratedAnswer.model_validate(json.loads(content))
+            normalized = content.strip()
+            if normalized.startswith("```json") and normalized.endswith("```"):
+                normalized = normalized[7:-3].strip()
+            return GeneratedAnswer.model_validate(json.loads(normalized))
         except (json.JSONDecodeError, ValueError):
             raise AiResultGenerationError(
                 AiResultErrorCode.AI_RESPONSE_INVALID, retryable=True

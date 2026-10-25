@@ -54,7 +54,14 @@ class OpenAiCompatibleLlmClient:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
                 ],
-                "response_format": {"type": "json_object"},
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "grounded_answer",
+                        "strict": True,
+                        "schema": GeneratedAnswer.model_json_schema(),
+                    },
+                },
             }
             # Gemini OpenAI 호환 API는 OpenAI 전용 reasoning_effort를 받지 않는다.
             if self._settings.llm_provider != "gemini_openai_compatible":

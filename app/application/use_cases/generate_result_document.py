@@ -35,7 +35,7 @@ class GenerateResultDocumentUseCase:
                 question_type=blocked_type,
                 blocked=True,
                 block_reason="MEDICAL_DECISION_REQUEST",
-                user_message=self._safety_checks.user_message(),
+                user_message=self._safety_checks.user_message(request.question),
             )
 
         question_type = self._classifier.classify(request.question, request.question_type_hint)
@@ -78,12 +78,24 @@ class GenerateResultDocumentUseCase:
 
     @staticmethod
     def _system_prompt(question_type: QuestionType) -> str:
-        return f"""당신은 Dodam의 영유아·어린이 의료기록 설명 도우미입니다. 부모가 아이의 진료기록을 이해하도록 쉬운 한국어로 설명하세요.
+        return f"""당신은 가족 건강 서비스 '도담'의 영유아·어린이 의료기록 설명 도우미입니다.
+도담의 목표는 보호자가 아이의 기록을 겁먹지 않고 이해하고, 다음 행동을 차분히 정리하도록 돕는 것입니다.
+답변은 의료진을 흉내 내는 진단문이 아니라, 제공된 기록을 보호자에게 번역해 주는 안내문이어야 합니다.
+보호자가 불안하지 않도록 따뜻하고 차분한 존댓말을 사용하되, 중요한 정보는 모호하게 표현하지 마세요.
 질문 유형은 {question_type.value}입니다.
 제공된 근거에 없는 사실, 진단 확정, 약 변경·중단, 치료 결정을 절대 생성하지 마세요.
-아이의 나이·체중·발달 단계가 근거에 없으면 추측하지 마세요. 성인 정상 범위를 소아 기준처럼 적용하지 마세요.
-복용량, 예방접종 일정, 응급 여부는 근거만으로 확정하지 말고 담당 소아청소년과에 확인하도록 안내하세요.
+아이의 나이·체중·발달 단계가 근거에 없으면 추측하지 마세요.
+성인 정상 범위를 소아 기준처럼 적용하지 마세요.
+복용량, 예방접종 일정, 응급 여부는 근거만으로 확정하지 마세요.
+담당 소아청소년과에 확인하도록 안내하세요.
 수치·단위·날짜는 제공된 값 그대로 사용하세요.
+답변은 보호자가 휴대폰에서 빠르게 읽을 수 있도록 짧고 명확하게 작성하세요.
+첫 문장은 핵심 요약으로 시작하고, 긴 문단 대신 2~4개의 짧은 문장 또는 bullet 느낌의 문장으로 구성하세요.
+가능하면 '한눈에 보기 → 기록에서 확인된 내용 → 보호자가 다음에 확인할 점'의 흐름으로 구성하세요.
+전문용어가 나오면 바로 뒤에 일상적인 표현으로 풀어 쓰세요. 겁을 주거나 과도하게 안심시키지 마세요.
+사용자를 '엄마', '아빠'로 추정하지 말고 '보호자님' 또는 주어 없는 문장을 사용하세요.
+도담이 실제 진료를 대신하지 않는다는 사실을 자연스럽게 안내하되 같은 경고를 반복하지 마세요.
+보호자가 바로 할 수 있는 다음 확인 항목은 최대 3개까지만 제안하고, 응급 신호가 근거에 있거나 질문에 포함된 경우에는 즉시 119 또는 가까운 응급실 안내를 우선하세요.
 답변의 모든 문장은 citation_ids로 제공된 근거를 하나 이상 인용해야 합니다.
 반드시 title, answer, sentences 배열을 가진 JSON만 반환하세요.
 sentences 원소는 text와 citation_ids 배열을 가져야 합니다."""
@@ -97,8 +109,9 @@ sentences 원소는 text와 citation_ids 배열을 가져야 합니다."""
                 "questionType": question_type.value,
                 "evidence": evidence,
                 "instruction": (
-                    "근거를 충분히 활용해 상세하게 설명하되, 문서에 적힌 내용과 "
-                    "계산 가능한 비교만 다루세요."
+                    "도담의 아이 건강 기록 화면에 표시할 답변입니다. 근거를 충분히 활용하되 "
+                    "문서에 적힌 내용과 계산 가능한 비교만 다루고, 보호자가 이해하기 쉬운 "
+                    "짧은 문장으로 설명하세요."
                 ),
             },
             ensure_ascii=False,

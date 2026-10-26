@@ -21,8 +21,9 @@ def register_error_handlers(app: FastAPI) -> None:
         return _error_response(error.status_code, error.code, error.message)
 
     @app.exception_handler(RequestValidationError)
-    async def handle_validation_error(_: Request, __: RequestValidationError) -> JSONResponse:
+    async def handle_validation_error(request: Request, error: RequestValidationError) -> JSONResponse:
         """본문·경로·쿼리 검증 실패를 GLOBAL_002로 통일한다."""
+        logger.warning("AI 요청 검증 실패: path=%s errors=%s", request.url.path, error.errors())
         return _error_response(
             400,
             CommonErrorCode.INVALID_REQUEST,

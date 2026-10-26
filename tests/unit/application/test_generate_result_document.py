@@ -16,9 +16,13 @@ class FakeLlm:
 
     def __init__(self, answer: GeneratedAnswer) -> None:
         self.answer = answer
+        self.system_prompt = ""
+        self.user_prompt = ""
 
     def generate_grounded_answer(self, system_prompt: str, user_prompt: str) -> GeneratedAnswer:
         """테스트용 생성 결과를 반환한다."""
+        self.system_prompt = system_prompt
+        self.user_prompt = user_prompt
         return self.answer
 
 
@@ -160,3 +164,27 @@ def test_llm_timeout_is_returned_as_retryable_failed_result():
     assert result.error_code == "AI_TIMEOUT"
     assert result.retryable is True
     assert result.answer is None
+
+
+def test_prompt_uses_dodam_child_health_voice_and_mobile_structure():
+    """답변 프롬프트는 도담의 아이 건강 말투와 모바일 가독성 규칙을 포함한다."""
+    allowed = uuid4()
+    llm = FakeLlm(
+        GeneratedAnswer(
+            title="한눈에 보는 검사 기록",
+            answer="기록에 HbA1c 6.5 %가 적혀 있어요.",
+            sentences=[
+                AnswerSentence(
+                    text="기록에 HbA1c 6.5 %가 적혀 있어요.", citation_ids=[allowed]
+                )
+            ],
+        )
+    )
+
+    GenerateResultDocumentUseCase(llm).generate(request_with_evidence(allowed))
+
+    assert "가족 건강 서비스 '도담'" in llm.system_prompt
+    assert "따뜻하고 차분한 존댓말" in llm.system_prompt
+    assert "한눈에 보기" in llm.system_prompt
+    assert "휴대폰" in llm.system_prompt
+    assert "보호자님" in llm.system_prompt

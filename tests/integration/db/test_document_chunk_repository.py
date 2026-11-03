@@ -316,7 +316,10 @@ def test_cited_previous_chunk_stays_but_loses_embedding(
     analysis_id: UUID,
     page_id: UUID,
 ) -> None:
-    """인용된 이전 청크는 남기고 임베딩만 지워 검색에서 뺀다. 새 청크와 임베딩은 들어간다."""
+    """이전 청크 하나라도 인용되면 이전 청크는 모두 남고, 이전 임베딩은 모두 지워 검색에서 뺀다.
+
+    새 청크와 임베딩은 들어간다.
+    """
     old_analysis_id = insert_analysis(db_session, document_id, days=-1)
     old_ids = [insert_old_chunk(db_session, old_analysis_id, page_id, i) for i in (0, 1)]
     cite_chunk(db_session, document_id, old_ids[0])
@@ -423,6 +426,24 @@ def test_deleted_document_changes_nothing(
     db_session.execute(
         text("UPDATE documents SET deleted_at = CURRENT_TIMESTAMP WHERE id = :id"),
         {"id": document_id},
+    )
+
+    assert replace_one(session_factory, document_id, analysis_id, page_id) is False
+
+    assert chunk_ids_of(db_session, analysis_id) == []
+    assert embedded_source_ids(db_session, document_id) == set()
+
+
+def test_status_deleted_document_changes_nothing(
+    db_session: Session,
+    session_factory: sessionmaker[Session],
+    document_id: UUID,
+    analysis_id: UUID,
+    page_id: UUID,
+) -> None:
+    """deleted_at이 비어 있어도 status가 DELETED면 색인하지 않고 False를 반환한다."""
+    db_session.execute(
+        text("UPDATE documents SET status = 'DELETED' WHERE id = :id"), {"id": document_id}
     )
 
     assert replace_one(session_factory, document_id, analysis_id, page_id) is False

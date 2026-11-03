@@ -131,14 +131,18 @@ class SqlAlchemyDocumentChunkRepository:
         embeddings: TextEmbeddings,
         created_at: datetime,
     ) -> bool:
-        """새 청크·임베딩 적재와 이전 analysis 청크·임베딩 삭제를 한 트랜잭션으로 묶는다."""
+        """새 청크·임베딩 적재와 이전 analysis 청크·임베딩 삭제를 한 트랜잭션으로 묶는다.
+
+        삭제 판정은 deleted_at과 status를 둘 다 본다. 이전 analysis 청크 중 하나라도 인용되어 있으면
+        이전 청크는 모두 남고, 이전 임베딩은 항상 지운다.
+        """
         if len(chunks) != len(embeddings.vectors):
             raise ValueError("청크 수와 벡터 수가 다릅니다.")
         with self._session_factory.begin() as session:
             # 문서 행을 잠가 같은 문서의 교체 두 개가 섞이지 않게 한다.
             document = session.execute(
                 select(DocumentModel.patient_id, DocumentModel.visit_id)
-                .where(DocumentModel.id == document_id, DocumentModel.deleted_at.is_(None))
+                .where(DocumentModel.id == document_id, *DOCUMENT_NOT_DELETED)
                 .with_for_update()
             ).one_or_none()
             if document is None or _latest_analysis_id(session, document_id) != analysis_id:

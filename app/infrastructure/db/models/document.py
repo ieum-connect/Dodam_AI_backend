@@ -16,6 +16,9 @@ class DocumentModel(Base):
     __tablename__ = "documents"
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    # patients, visits는 매핑하지 않아 FK를 적지 않는다.
+    patient_id: Mapped[UUID] = mapped_column(Uuid)
+    visit_id: Mapped[UUID] = mapped_column(Uuid)
     storage_key: Mapped[str] = mapped_column(String(500))
     mime_type: Mapped[str] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(20))

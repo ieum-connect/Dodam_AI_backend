@@ -24,6 +24,7 @@ from app.domain.document.page_extraction import (
     SourceBox,
 )
 from app.domain.operation.error_code import AnalysisErrorCode, FailedStep
+from app.infrastructure.db.models.document import DocumentModel
 from app.infrastructure.db.repositories.document_analysis_repository import (
     SqlAlchemyDocumentAnalysisRepository,
 )
@@ -436,3 +437,17 @@ def test_mark_started_clears_previous_failure(
     assert (analysis.status, analysis.completed_at) == (AnalysisStatus.RUNNING, None)
     assert (analysis.error_code, analysis.failed_step, analysis.error_message) == (None, None, None)
     assert analysis.retryable is False
+
+
+def test_document_model_reads_patient_and_visit_ids(
+    db_session: Session, session_factory: sessionmaker[Session], document_id: UUID
+) -> None:
+    """documents 매핑으로 읽은 patient_id, visit_id가 테이블 값과 같다."""
+    expected = db_session.execute(
+        text("SELECT patient_id, visit_id FROM documents WHERE id = :id"), {"id": document_id}
+    ).one()
+
+    with session_factory() as session:
+        document = session.get_one(DocumentModel, document_id)
+
+        assert (document.patient_id, document.visit_id) == tuple(expected)

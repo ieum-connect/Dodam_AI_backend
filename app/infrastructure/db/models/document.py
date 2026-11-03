@@ -7,6 +7,7 @@ from sqlalchemy import String, Uuid
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.domain.document.document_analysis import DocumentStatus
 from app.infrastructure.db.models.base import Base
 
 
@@ -25,3 +26,10 @@ class DocumentModel(Base):
     status_changed_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True, precision=6))
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True, precision=6))
     deleted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True, precision=6))
+
+
+# 삭제되지 않은 문서 조건. 분석 대상 조회와 재색인 대상 조회가 같은 기준을 쓴다.
+DOCUMENT_NOT_DELETED = (
+    DocumentModel.status != DocumentStatus.DELETED,
+    DocumentModel.deleted_at.is_(None),
+)

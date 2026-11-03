@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError, StatementError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.application.ports.text_embedder import TextEmbeddings
+from app.domain.document.document_analysis import AnalysisStatus
 from app.domain.document.document_chunk import DocumentChunk, PageText
 from app.domain.document.document_page import PageOcrStatus
 from app.infrastructure.db.models.embedding import EmbeddingModel
@@ -118,7 +119,7 @@ def test_duplicate_chunk_index_rolls_back_whole_replacement(
 
     assert chunk_ids_of(db_session, analysis_id) == []
     assert chunk_ids_of(db_session, old_analysis_id) == [old_id]
-    assert embedded_source_ids(db_session) == {old_id}
+    assert embedded_source_ids(db_session, document_id) == {old_id}
     assert fetch_analysis_status(db_session, analysis_id) == status_before
 
 
@@ -169,9 +170,13 @@ def insert_embedding(
 
 
 def insert_old_chunk(
-    session: Session, analysis_id: UUID, page_id: UUID, chunk_index: int
+    session: Session,
+    analysis_id: UUID,
+    page_id: UUID,
+    chunk_index: int,
+    source_type: str = "DOCUMENT_CHUNK",
 ) -> UUID:
-    """청크 하나와 그 청크의 DOCUMENT_CHUNK 임베딩을 raw SQL로 넣고 청크 id를 돌려준다."""
+    """청크 하나와 그 청크를 가리키는 임베딩을 raw SQL로 넣고 청크 id를 돌려준다."""
     chunk_id = uuid4()
     session.execute(
         text(
@@ -186,7 +191,7 @@ def insert_old_chunk(
             "content": "이전 합성 청크",
         },
     )
-    insert_embedding(session, analysis_id, chunk_id, "DOCUMENT_CHUNK")
+    insert_embedding(session, analysis_id, chunk_id, source_type)
     return chunk_id
 
 
@@ -216,9 +221,17 @@ def chunk_ids_of(session: Session, analysis_id: UUID) -> list[UUID]:
     )
 
 
-def embedded_source_ids(session: Session) -> set[UUID]:
-    """테스트 트랜잭션에서 보이는 모든 임베딩의 source_id."""
-    return set(session.execute(text("SELECT source_id FROM embeddings")).scalars())
+def embedded_source_ids(session: Session, document_id: UUID) -> set[UUID]:
+    """테스트 문서의 환자에 속한 임베딩의 source_id. 공유 DB의 다른 행은 보지 않는다."""
+    return set(
+        session.execute(
+            text(
+                "SELECT source_id FROM embeddings WHERE patient_id ="
+                " (SELECT patient_id FROM documents WHERE id = :id)"
+            ),
+            {"id": document_id},
+        ).scalars()
+    )
 
 
 def replace_one(
@@ -292,7 +305,7 @@ def test_replace_removes_previous_analysis_chunks_and_embeddings(
     new_ids = chunk_ids_of(db_session, analysis_id)
     assert chunk_ids_of(db_session, old_analysis_id) == []
     assert len(new_ids) == 1
-    assert embedded_source_ids(db_session) == set(new_ids)
+    assert embedded_source_ids(db_session, document_id) == set(new_ids)
     assert set(new_ids).isdisjoint(old_ids)
 
 
@@ -313,7 +326,7 @@ def test_cited_previous_chunk_stays_but_loses_embedding(
     new_ids = chunk_ids_of(db_session, analysis_id)
     assert sorted(chunk_ids_of(db_session, old_analysis_id)) == sorted(old_ids)
     assert len(new_ids) == 1
-    assert embedded_source_ids(db_session) == set(new_ids)
+    assert embedded_source_ids(db_session, document_id) == set(new_ids)
 
 
 def test_replace_keeps_health_record_embeddings(
@@ -357,7 +370,7 @@ def test_failure_during_load_keeps_previous_data(
 
     assert chunk_ids_of(db_session, analysis_id) == []
     assert sorted(chunk_ids_of(db_session, old_analysis_id)) == sorted(old_ids)
-    assert embedded_source_ids(db_session) == set(old_ids)
+    assert embedded_source_ids(db_session, document_id) == set(old_ids)
 
 
 def test_mismatched_vector_count_writes_nothing(
@@ -378,7 +391,7 @@ def test_mismatched_vector_count_writes_nothing(
         )
 
     assert chunk_ids_of(db_session, analysis_id) == []
-    assert embedded_source_ids(db_session) == set()
+    assert embedded_source_ids(db_session, document_id) == set()
 
 
 def test_not_latest_analysis_changes_nothing(
@@ -396,7 +409,7 @@ def test_not_latest_analysis_changes_nothing(
 
     assert chunk_ids_of(db_session, analysis_id) == []
     assert chunk_ids_of(db_session, newer_analysis_id) == [newer_id]
-    assert embedded_source_ids(db_session) == {newer_id}
+    assert embedded_source_ids(db_session, document_id) == {newer_id}
 
 
 def test_deleted_document_changes_nothing(
@@ -415,7 +428,7 @@ def test_deleted_document_changes_nothing(
     assert replace_one(session_factory, document_id, analysis_id, page_id) is False
 
     assert chunk_ids_of(db_session, analysis_id) == []
-    assert embedded_source_ids(db_session) == set()
+    assert embedded_source_ids(db_session, document_id) == set()
 
 
 def test_empty_chunks_still_remove_previous_data(
@@ -436,4 +449,142 @@ def test_empty_chunks_still_remove_previous_data(
     assert replaced is True
     assert chunk_ids_of(db_session, old_analysis_id) == []
     assert chunk_ids_of(db_session, analysis_id) == []
-    assert embedded_source_ids(db_session) == set()
+    assert embedded_source_ids(db_session, document_id) == set()
+
+
+def insert_document(session: Session, like: UUID) -> UUID:
+    """like 문서와 같은 환자·방문·업로더로 합성 문서를 하나 더 만든다."""
+    document_id = uuid4()
+    session.execute(
+        text(
+            "INSERT INTO documents (id, visit_id, uploader_user_id, patient_id,"
+            " storage_key, file_name, mime_type, file_size_bytes)"
+            " SELECT :id, visit_id, uploader_user_id, patient_id,"
+            " 'documents/' || :id || '/original.pdf', 'original.pdf', 'application/pdf', 1"
+            " FROM documents WHERE id = :like"
+        ),
+        {"id": document_id, "like": like},
+    )
+    return document_id
+
+
+def set_analysis_status(session: Session, analysis_id: UUID, status: str) -> None:
+    """분석 작업의 상태를 바꾼다."""
+    session.execute(
+        text("UPDATE document_analyses SET status = :status WHERE id = :id"),
+        {"id": analysis_id, "status": status},
+    )
+
+
+def make_analyzed_document(
+    session: Session,
+    like: UUID,
+    analysis_status: str = "SUCCEEDED",
+    page_status: PageOcrStatus = PageOcrStatus.SUCCEEDED,
+) -> tuple[UUID, UUID, UUID]:
+    """문서, 분석 하나, 페이지 하나를 만들고 (문서, 분석, 페이지) id를 돌려준다."""
+    document_id = insert_document(session, like)
+    analysis_id = insert_analysis(session, document_id, days=0)
+    set_analysis_status(session, analysis_id, analysis_status)
+    text_value = "합성 원문" if page_status == PageOcrStatus.SUCCEEDED else None
+    page_id = insert_page(session, document_id, 1, page_status, text_value)
+    return document_id, analysis_id, page_id
+
+
+def test_find_index_target_reads_latest_analysis_and_chunk_presence(
+    db_session: Session,
+    session_factory: sessionmaker[Session],
+    document_id: UUID,
+    analysis_id: UUID,
+    page_id: UUID,
+) -> None:
+    """최신 분석의 id와 상태를 읽고, 그 분석에 청크가 있는지 알려 준다."""
+    old_analysis_id = insert_analysis(db_session, document_id, days=-1)
+    insert_old_chunk(db_session, old_analysis_id, page_id, 0)
+    repository = SqlAlchemyDocumentChunkRepository(session_factory)
+
+    target = repository.find_index_target(document_id)
+    assert target is not None
+    assert (target.analysis_id, target.status, target.has_chunks) == (
+        analysis_id,
+        AnalysisStatus.PENDING,
+        False,
+    )
+
+    set_analysis_status(db_session, analysis_id, "SUCCEEDED")
+    insert_old_chunk(db_session, analysis_id, page_id, 0)
+    target = repository.find_index_target(document_id)
+    assert target is not None
+    assert (target.status, target.has_chunks) == (AnalysisStatus.SUCCEEDED, True)
+
+
+def test_find_index_target_is_none_without_live_document_or_analysis(
+    db_session: Session, session_factory: sessionmaker[Session], document_id: UUID
+) -> None:
+    """없는 문서, 분석 행이 없는 문서, 삭제된 문서는 None이다."""
+    no_analysis = insert_document(db_session, document_id)
+    soft_deleted, _, _ = make_analyzed_document(db_session, document_id)
+    status_deleted, _, _ = make_analyzed_document(db_session, document_id)
+    db_session.execute(
+        text("UPDATE documents SET deleted_at = CURRENT_TIMESTAMP WHERE id = :id"),
+        {"id": soft_deleted},
+    )
+    db_session.execute(
+        text("UPDATE documents SET status = 'DELETED' WHERE id = :id"), {"id": status_deleted}
+    )
+    repository = SqlAlchemyDocumentChunkRepository(session_factory)
+
+    for missing in (uuid4(), no_analysis, soft_deleted, status_deleted):
+        assert repository.find_index_target(missing) is None
+
+
+def test_find_unindexed_document_ids_picks_only_live_succeeded_without_embeddings(
+    db_session: Session, session_factory: sessionmaker[Session], document_id: UUID
+) -> None:
+    """임베딩 있는 문서, 삭제된 문서, 최신 분석이 SUCCEEDED가 아닌 문서, 원문 없는 문서는 뺀다."""
+    unindexed, _, _ = make_analyzed_document(db_session, document_id)
+
+    only_old_indexed, _, old_page = make_analyzed_document(db_session, document_id)
+    older = insert_analysis(db_session, only_old_indexed, days=-1)
+    set_analysis_status(db_session, older, "SUCCEEDED")
+    insert_old_chunk(db_session, older, old_page, 0)
+
+    health_only, health_analysis, health_page = make_analyzed_document(db_session, document_id)
+    insert_old_chunk(db_session, health_analysis, health_page, 0, source_type="HEALTH_RECORD")
+
+    indexed, indexed_analysis, indexed_page = make_analyzed_document(db_session, document_id)
+    assert replace_one(session_factory, indexed, indexed_analysis, indexed_page)
+
+    soft_deleted, _, _ = make_analyzed_document(db_session, document_id)
+    db_session.execute(
+        text("UPDATE documents SET deleted_at = CURRENT_TIMESTAMP WHERE id = :id"),
+        {"id": soft_deleted},
+    )
+    status_deleted, _, _ = make_analyzed_document(db_session, document_id)
+    db_session.execute(
+        text("UPDATE documents SET status = 'DELETED' WHERE id = :id"), {"id": status_deleted}
+    )
+
+    latest_running, _, _ = make_analyzed_document(db_session, document_id, "RUNNING")
+    older_succeeded = insert_analysis(db_session, latest_running, days=-1)
+    set_analysis_status(db_session, older_succeeded, "SUCCEEDED")
+
+    no_text, _, _ = make_analyzed_document(
+        db_session, document_id, page_status=PageOcrStatus.SKIPPED
+    )
+
+    mine = {
+        unindexed,
+        only_old_indexed,
+        health_only,
+        indexed,
+        soft_deleted,
+        status_deleted,
+        latest_running,
+        no_text,
+    }
+    found = SqlAlchemyDocumentChunkRepository(session_factory).find_unindexed_document_ids()
+
+    # 공유 DB라 다른 문서가 섞일 수 있어 이 테스트가 만든 문서만 비교한다.
+    assert set(found) & mine == {unindexed, only_old_indexed, health_only}
+    assert found == sorted(found)

@@ -5,14 +5,16 @@ from collections.abc import Sequence
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import delete, insert, select
+from sqlalchemy import Select, delete, exists, func, insert, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.application.ports.document_chunk_repository import IndexTarget
 from app.application.ports.text_embedder import TextEmbeddings
+from app.domain.document.document_analysis import AnalysisStatus
 from app.domain.document.document_chunk import DocumentChunk, PageText
 from app.domain.document.document_page import PageOcrStatus
-from app.infrastructure.db.models.document import DocumentModel
+from app.infrastructure.db.models.document import DOCUMENT_NOT_DELETED, DocumentModel
 from app.infrastructure.db.models.document_analysis import DocumentAnalysisModel
 from app.infrastructure.db.models.document_chunk import DocumentChunkModel
 from app.infrastructure.db.models.document_page import DocumentPageModel
@@ -49,6 +51,77 @@ class SqlAlchemyDocumentChunkRepository:
             )
             for row in rows
         ]
+
+    def find_index_target(self, document_id: UUID) -> IndexTarget | None:
+        """삭제되지 않은 문서의 최신 분석 id·상태와 그 분석의 청크 유무를 읽는다."""
+        with self._session_factory() as session:
+            document = session.execute(
+                select(DocumentModel.id).where(
+                    DocumentModel.id == document_id, *DOCUMENT_NOT_DELETED
+                )
+            ).scalar_one_or_none()
+            if document is None:
+                return None
+            latest = session.execute(
+                _latest_analysis_query(document_id).add_columns(DocumentAnalysisModel.status)
+            ).one_or_none()
+            if latest is None:
+                return None
+            has_chunks = session.execute(
+                select(exists().where(DocumentChunkModel.analysis_id == latest.id))
+            ).scalar_one()
+        return IndexTarget(
+            analysis_id=latest.id, status=AnalysisStatus(latest.status), has_chunks=has_chunks
+        )
+
+    def find_unindexed_document_ids(self) -> list[UUID]:
+        """최신 분석이 SUCCEEDED이고 원문이 있는데 DOCUMENT_CHUNK 임베딩이 없는 문서 id 목록."""
+        # 문서마다 최신 분석 하나(rank 1). 정렬 기준은 _latest_analysis_query와 같다.
+        ranked = select(
+            DocumentAnalysisModel.document_id,
+            DocumentAnalysisModel.id,
+            DocumentAnalysisModel.status,
+            func.row_number()
+            .over(
+                partition_by=DocumentAnalysisModel.document_id,
+                order_by=(DocumentAnalysisModel.created_at.desc(), DocumentAnalysisModel.id.desc()),
+            )
+            .label("rank"),
+        ).subquery()
+        latest = select(ranked).where(ranked.c.rank == 1).subquery()
+        has_embedding = (
+            select(DocumentChunkModel.id)
+            .join(
+                EmbeddingModel,
+                (EmbeddingModel.source_id == DocumentChunkModel.id)
+                & (EmbeddingModel.source_type == SOURCE_TYPE_DOCUMENT_CHUNK),
+            )
+            .where(DocumentChunkModel.analysis_id == latest.c.id)
+            .exists()
+        )
+        # 원문이 없으면 청크가 0개라 임베딩이 생기지 않는다. 목록에 계속 남지 않게 뺀다.
+        has_text = (
+            select(DocumentPageModel.id)
+            .where(
+                DocumentPageModel.document_id == latest.c.document_id,
+                DocumentPageModel.ocr_status == PageOcrStatus.SUCCEEDED,
+            )
+            .exists()
+        )
+        with self._session_factory() as session:
+            return list(
+                session.execute(
+                    select(latest.c.document_id)
+                    .join(DocumentModel, DocumentModel.id == latest.c.document_id)
+                    .where(
+                        *DOCUMENT_NOT_DELETED,
+                        latest.c.status == AnalysisStatus.SUCCEEDED,
+                        ~has_embedding,
+                        has_text,
+                    )
+                    .order_by(latest.c.document_id)
+                ).scalars()
+            )
 
     def replace_chunks(
         self,
@@ -119,14 +192,19 @@ def _chunk_row(
     }
 
 
-def _latest_analysis_id(session: Session, document_id: UUID) -> UUID | None:
-    """문서의 최신 분석 id. 정렬 기준은 find_target, Spring 목록 쿼리와 같다."""
-    return session.execute(
+def _latest_analysis_query(document_id: UUID) -> Select[tuple[UUID]]:
+    """문서의 최신 분석 id를 고르는 쿼리. 정렬 기준은 find_target, Spring 목록 쿼리와 같다."""
+    return (
         select(DocumentAnalysisModel.id)
         .where(DocumentAnalysisModel.document_id == document_id)
         .order_by(DocumentAnalysisModel.created_at.desc(), DocumentAnalysisModel.id.desc())
         .limit(1)
-    ).scalar_one_or_none()
+    )
+
+
+def _latest_analysis_id(session: Session, document_id: UUID) -> UUID | None:
+    """문서의 최신 분석 id."""
+    return session.execute(_latest_analysis_query(document_id)).scalar_one_or_none()
 
 
 def _other_analysis_chunk_ids(session: Session, document_id: UUID, analysis_id: UUID) -> list[UUID]:

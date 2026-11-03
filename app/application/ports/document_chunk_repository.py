@@ -1,12 +1,23 @@
 """청킹할 페이지 원문을 읽고 청크와 그 임베딩을 저장하는 포트를 정의한다."""
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
 from app.application.ports.text_embedder import TextEmbeddings
+from app.domain.document.document_analysis import AnalysisStatus
 from app.domain.document.document_chunk import DocumentChunk, PageText
+
+
+@dataclass(frozen=True)
+class IndexTarget:
+    """재색인 판단에 쓰는 문서의 최신 분석 상태와 청크 유무."""
+
+    analysis_id: UUID
+    status: AnalysisStatus
+    has_chunks: bool
 
 
 class DocumentChunkRepository(Protocol):
@@ -14,6 +25,14 @@ class DocumentChunkRepository(Protocol):
 
     def find_page_texts(self, document_id: UUID) -> list[PageText]:
         """문서의 페이지 원문을 page_no 순서로 읽는다."""
+        ...
+
+    def find_index_target(self, document_id: UUID) -> IndexTarget | None:
+        """삭제되지 않은 문서의 최신 분석을 읽는다. 문서나 분석 행이 없으면 None이다."""
+        ...
+
+    def find_unindexed_document_ids(self) -> list[UUID]:
+        """최신 분석이 SUCCEEDED이고 원문이 있는데 DOCUMENT_CHUNK 임베딩이 없는 문서 id 목록."""
         ...
 
     def replace_chunks(

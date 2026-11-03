@@ -17,7 +17,7 @@ from app.domain.document.document_analysis import (
 )
 from app.domain.document.document_page import PageOcrStatus, RenderedPage
 from app.domain.document.page_extraction import PageExtraction
-from app.infrastructure.db.models.document import DocumentModel
+from app.infrastructure.db.models.document import DOCUMENT_NOT_DELETED, DocumentModel
 from app.infrastructure.db.models.document_analysis import DocumentAnalysisModel
 from app.infrastructure.db.models.document_page import DocumentPageModel
 from app.infrastructure.db.models.extracted_item import ExtractedItemModel
@@ -26,11 +26,6 @@ from app.infrastructure.db.repositories.document_page_repository import (
 )
 
 logger = logging.getLogger(__name__)
-
-_NOT_DELETED = (
-    DocumentModel.status != DocumentStatus.DELETED,
-    DocumentModel.deleted_at.is_(None),
-)
 
 
 class SqlAlchemyDocumentAnalysisRepository:
@@ -47,7 +42,7 @@ class SqlAlchemyDocumentAnalysisRepository:
         with self._session_factory() as session:
             document = session.execute(
                 select(DocumentModel.storage_key, DocumentModel.mime_type).where(
-                    DocumentModel.id == document_id, *_NOT_DELETED
+                    DocumentModel.id == document_id, *DOCUMENT_NOT_DELETED
                 )
             ).one_or_none()
             if document is None:
@@ -203,7 +198,7 @@ def _update_document(
     # 그 사이 삭제된 문서를 덮어쓰지 않게 조건을 DB에서 확인한다. Spring과 같은 방식이다.
     result = session.execute(
         update(DocumentModel)
-        .where(DocumentModel.id == target.document_id, *_NOT_DELETED)
+        .where(DocumentModel.id == target.document_id, *DOCUMENT_NOT_DELETED)
         .values(status=status, status_changed_at=changed_at, updated_at=changed_at)
     )
     return result.rowcount == 1

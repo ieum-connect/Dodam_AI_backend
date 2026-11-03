@@ -1,5 +1,6 @@
 """문서 분석 유스케이스 단위 테스트. 저장소, 스토리지, VLM 포트는 가짜로 대신한다."""
 
+import logging
 from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime
 from typing import Any
@@ -7,6 +8,7 @@ from uuid import UUID
 
 import pymupdf
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from app.application.ports.document_analysis_repository import AnalysisTarget
 from app.application.ports.document_storage import (
@@ -23,7 +25,8 @@ from app.application.ports.page_extractor import (
 )
 from app.application.use_cases.analyze_document import DocumentAnalysisResult, analyze_document
 from app.domain.document.document_analysis import AnalysisFailure, DocumentStatus
-from app.domain.document.document_page import RenderedPage
+from app.domain.document.document_chunk import DocumentChunk, PageText
+from app.domain.document.document_page import PageOcrStatus, RenderedPage
 from app.domain.document.page_extraction import (
     DocumentType,
     ExtractedItem,
@@ -35,6 +38,8 @@ from app.domain.operation.error_code import AnalysisErrorCode, FailedStep
 
 DOCUMENT_ID = UUID("11111111-2222-3333-4444-555555555555")
 ANALYSIS_ID = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+PAGE_ID = UUID("99999999-8888-7777-6666-555555555555")
+CHUNK_SOURCE_TEXT = "합성 청크 원문"
 OBJECT_KEY = f"documents/{DOCUMENT_ID}/original.pdf"
 TARGET = AnalysisTarget(
     document_id=DOCUMENT_ID,
@@ -196,12 +201,42 @@ class FakeRepository:
         return [call[0] for call in self.calls]
 
 
+class FakeChunkRepository:
+    """호출을 기록하는 가짜 청크 저장소. 정해 둔 메서드에서는 정해 둔 예외를 던진다."""
+
+    def __init__(
+        self,
+        calls: list[tuple] | None = None,
+        find_error: Exception | None = None,
+        save_error: Exception | None = None,
+    ) -> None:
+        self.calls = [] if calls is None else calls
+        self.find_error = find_error
+        self.save_error = save_error
+
+    def find_page_texts(self, document_id: UUID) -> list[PageText]:
+        """호출을 기록하고 합성 원문 페이지 한 장을 돌려준다."""
+        self.calls.append(("find_page_texts", document_id))
+        if self.find_error is not None:
+            raise self.find_error
+        return [PageText(PAGE_ID, 1, PageOcrStatus.SUCCEEDED, CHUNK_SOURCE_TEXT)]
+
+    def save_chunks(
+        self, analysis_id: UUID, chunks: Sequence[DocumentChunk], created_at: datetime
+    ) -> None:
+        """받은 분석 id와 청크를 기록한다."""
+        self.calls.append(("save_chunks", analysis_id, list(chunks)))
+        if self.save_error is not None:
+            raise self.save_error
+
+
 def run(
     repository: FakeRepository,
     *,
     reader: FakeReader | None = None,
     writer: FakeWriter | None = None,
     extractor: FakeExtractor | None = None,
+    chunk_repository: FakeChunkRepository | None = None,
 ) -> DocumentAnalysisResult:
     """가짜 포트로 유스케이스를 실행한다. 넘기지 않은 포트는 성공하는 가짜를 쓴다."""
     return analyze_document(
@@ -210,6 +245,7 @@ def run(
         writer=writer or FakeWriter(),
         repository=repository,
         page_repository=repository,
+        chunk_repository=chunk_repository or FakeChunkRepository(),
         extractor=extractor or FakeExtractor(),
         render_dpi=72,
         max_pages=5,
@@ -499,3 +535,123 @@ def test_original_error_is_raised_when_failure_record_also_fails() -> None:
         run(repository, extractor=FakeExtractor({1: error}))
 
     assert raised.value is error
+
+
+@pytest.mark.parametrize(
+    ("errors", "expected_status"),
+    [
+        ({}, DocumentStatus.READY),
+        ({2: extraction_error(PageExtractionErrorCode.TIMEOUT)}, DocumentStatus.NEEDS_REVIEW),
+    ],
+    ids=["ready", "needs_review"],
+)
+def test_chunks_are_saved_after_result(
+    errors: dict[int, Exception], expected_status: DocumentStatus
+) -> None:
+    """결과를 저장한 뒤 그 문서의 원문을 읽어 나눈 청크를 이 분석 id로 저장한다."""
+    repository = FakeRepository()
+    chunk_repository = FakeChunkRepository(calls=repository.calls)
+
+    result = run(repository, extractor=FakeExtractor(errors), chunk_repository=chunk_repository)
+
+    assert result.document_status is expected_status
+    assert repository.call_names()[-3:] == ["save_result", "find_page_texts", "save_chunks"]
+    assert repository.calls[-2] == ("find_page_texts", DOCUMENT_ID)
+    name, analysis_id, chunks = repository.calls[-1]
+    assert (name, analysis_id) == ("save_chunks", ANALYSIS_ID)
+    assert [(c.chunk_index, c.content, c.page_id, c.bounding_box) for c in chunks] == [
+        (0, CHUNK_SOURCE_TEXT, PAGE_ID, None)
+    ]
+
+
+def test_no_chunking_when_all_pages_fail() -> None:
+    """분석이 FAILED로 끝나면 청킹을 부르지 않는다."""
+    chunk_repository = FakeChunkRepository()
+    error = extraction_error(PageExtractionErrorCode.REFUSED)
+
+    run(
+        FakeRepository(),
+        extractor=FakeExtractor({1: error, 2: error, 3: error}),
+        chunk_repository=chunk_repository,
+    )
+
+    assert chunk_repository.calls == []
+
+
+def test_no_chunking_when_result_was_not_saved() -> None:
+    """그 사이 문서가 삭제되어 결과를 저장하지 못했으면 청킹을 부르지 않는다."""
+
+    class DeletedRepository(FakeRepository):
+        """결과 저장이 언제나 False인 가짜 저장소."""
+
+        def save_result(self, *args: Any) -> bool:
+            """문서가 삭제된 경우처럼 False를 돌려준다."""
+            return False
+
+    chunk_repository = FakeChunkRepository()
+
+    result = run(DeletedRepository(), chunk_repository=chunk_repository)
+
+    assert result.document_status is None
+    assert chunk_repository.calls == []
+
+
+def test_no_chunking_for_non_target() -> None:
+    """분석 대상이 아니면 청킹을 부르지 않는다."""
+    chunk_repository = FakeChunkRepository()
+
+    run(FakeRepository(target=None), chunk_repository=chunk_repository)
+
+    assert chunk_repository.calls == []
+
+
+@pytest.mark.parametrize(
+    "chunk_repository_arguments",
+    [
+        {"find_error": ConnectionError(CHUNK_SOURCE_TEXT)},
+        {"save_error": IntegrityError("INSERT", {"content": CHUNK_SOURCE_TEXT}, Exception())},
+    ],
+    ids=["find_fails", "save_conflict"],
+)
+def test_chunking_failure_keeps_analysis_result(
+    chunk_repository_arguments: dict[str, Exception], caplog: pytest.LogCaptureFixture
+) -> None:
+    """청킹 저장소가 실패해도 반환값은 같고 mark_failed는 없다. 로그는 error에 원문 없이 남는다."""
+    repository = FakeRepository()
+
+    with caplog.at_level(logging.ERROR):
+        result = run(
+            repository, chunk_repository=FakeChunkRepository(**chunk_repository_arguments)
+        )
+
+    assert result == DocumentAnalysisResult(
+        document_status=DocumentStatus.READY, usages=(USAGE, USAGE, USAGE)
+    )
+    assert "mark_failed" not in repository.call_names()
+    errors = [record for record in caplog.records if record.levelno == logging.ERROR]
+    assert len(errors) == 1
+    expected_class = next(iter(chunk_repository_arguments.values())).__class__.__name__
+    assert expected_class in errors[0].getMessage()
+    assert CHUNK_SOURCE_TEXT not in caplog.text
+
+
+def test_chunk_calculation_failure_keeps_analysis_result(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """청크 계산이 실패해도(예: 인코딩 내려받기 실패) 분석 결과는 그대로이고 저장하지 않는다."""
+
+    def fail(pages: Sequence[PageText]) -> list[DocumentChunk]:
+        raise OSError(CHUNK_SOURCE_TEXT)
+
+    monkeypatch.setattr("app.application.use_cases.analyze_document.chunk_pages", fail)
+    repository = FakeRepository()
+    chunk_repository = FakeChunkRepository()
+
+    with caplog.at_level(logging.ERROR):
+        result = run(repository, chunk_repository=chunk_repository)
+
+    assert result.document_status is DocumentStatus.READY
+    assert "mark_failed" not in repository.call_names()
+    assert [call[0] for call in chunk_repository.calls] == ["find_page_texts"]
+    assert "OSError" in caplog.text
+    assert CHUNK_SOURCE_TEXT not in caplog.text

@@ -21,6 +21,9 @@ from app.infrastructure.db.models.document_page import DocumentPageModel
 from app.infrastructure.db.repositories.document_analysis_repository import (
     SqlAlchemyDocumentAnalysisRepository,
 )
+from app.infrastructure.db.repositories.document_chunk_repository import (
+    SqlAlchemyDocumentChunkRepository,
+)
 from app.infrastructure.db.session import get_session_factory
 from app.infrastructure.providers.llm.openai_page_extractor import create_page_extractor
 from app.infrastructure.storage.local_document_storage import LocalDocumentStorage
@@ -71,6 +74,7 @@ def main() -> None:
                 writer=storage,
                 repository=repository,
                 page_repository=repository,
+                chunk_repository=SqlAlchemyDocumentChunkRepository(session_factory),
                 extractor=extractor,
                 render_dpi=settings.document_render_dpi,
                 max_pages=settings.document_max_pages,

@@ -4,6 +4,10 @@
 문서와 분석의 상태는 바꾸지 않는다. 자동 테스트에 포함되지 않는다.
 색인되는 문서마다 OpenAI 임베딩 비용이 들고 DB의 document_chunks, embeddings가 바뀐다.
 --missing은 누락 목록 전체를 개수 제한 없이 처리하므로, 목록이 길면 비용도 그만큼 든다.
+--missing은 DOCUMENT_CHUNK 임베딩이 없는 문서를, 문서 id 지정은 최신 분석에 청크가 있는지를
+기준으로 건너뛴다.
+청크와 임베딩은 한 트랜잭션으로 함께 저장되므로 보통 두 기준의 결과가 같다.
+EMBEDDING_API_KEY가 없으면 대상을 조회하기 전에 종료한다.
 저장소 루트에서 실행한다.
 
     python -m scripts.reindex_documents <documentId>
@@ -46,6 +50,12 @@ def main() -> None:
     """대상 문서를 하나씩 재색인하고, 실패해도 다음 문서로 넘어간 뒤 건수를 요약한다."""
     args = parse_args()
     settings = get_settings()
+    key = settings.embedding_api_key
+    if key is None or not key.get_secret_value():
+        # 키가 없으면 모든 문서가 MISSING_API_KEY로 실패하므로 조회 전에 끝낸다.
+        # 키 값은 출력하지 않는다.
+        print("EMBEDDING_API_KEY가 설정되지 않아 재색인할 수 없습니다.")
+        raise SystemExit(1)
     repository = SqlAlchemyDocumentChunkRepository(get_session_factory())
     embedder = create_text_embedder(settings)
     summary: Counter[str] = Counter()

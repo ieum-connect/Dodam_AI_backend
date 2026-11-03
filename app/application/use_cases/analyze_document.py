@@ -29,11 +29,11 @@ from app.application.ports.page_extractor import (
     PageExtractor,
     VlmUsage,
 )
-from app.application.ports.text_embedder import TextEmbedder, TextEmbeddingError, TextEmbeddings
+from app.application.ports.text_embedder import TextEmbedder
+from app.application.use_cases.index_document_chunks import index_analysis_chunks
 from app.domain.document.document_analysis import AnalysisFailure, DocumentStatus
 from app.domain.document.page_split import PageSplitError
 from app.domain.operation.error_code import AnalysisErrorCode, FailedStep
-from app.pipelines.documents.steps.chunk_pages import chunk_pages
 from app.pipelines.documents.steps.extract_pages import PageExtractionOutcome, extract_pages
 from app.pipelines.documents.steps.load_document_pages import load_document_pages
 from app.pipelines.documents.steps.save_rendered_pages import save_rendered_pages
@@ -156,8 +156,14 @@ def analyze_document(
         outcomes = extract_pages(extractor, pages)
         result = _record_outcomes(repository, target, len(pages), outcomes)
         # 결과를 실제로 저장한 분석만 색인한다. 원문은 save_result가 기록한다.
+        # 색인 실패는 결과로만 돌아오고 분석 결과를 바꾸지 않는다. 복구는 재색인이 한다.
         if result.document_status is not None and result.failure is None:
-            _index_chunks(chunk_repository, embedder, target)
+            index_analysis_chunks(
+                target.document_id,
+                target.analysis_id,
+                chunk_repository=chunk_repository,
+                embedder=embedder,
+            )
         return result
     except Exception as error:
         # 예외 메시지에는 원문이나 경로가 들어 있을 수 있어 클래스 이름만 남긴다.
@@ -229,42 +235,6 @@ def _record_outcomes(
         page_count,
     )
     return DocumentAnalysisResult(document_status=status if saved else None, usages=usages)
-
-
-def _index_chunks(
-    chunk_repository: DocumentChunkRepository, embedder: TextEmbedder, target: AnalysisTarget
-) -> None:
-    """페이지 원문을 청크로 나누고 임베딩해 이전 분석의 청크·임베딩과 교체한다."""
-    # 예외를 밖으로 올리면 이미 저장한 분석 결과가 FAILED로 바뀌므로 여기서 끝낸다.
-    try:
-        chunks = chunk_pages(chunk_repository.find_page_texts(target.document_id))
-        # 임베딩 호출은 오래 걸리므로 DB 트랜잭션 밖에서 끝낸다.
-        embeddings = (
-            embedder.embed([chunk.content for chunk in chunks])
-            if chunks
-            else TextEmbeddings(vectors=[], model_name="", dimensions=0)
-        )
-        # 청크가 없어도 교체해야 이전 분석의 임베딩이 검색에 남지 않는다.
-        replaced = chunk_repository.replace_chunks(
-            target.document_id, target.analysis_id, chunks, embeddings, datetime.now(UTC)
-        )
-    except Exception as error:
-        # 예외 메시지에는 원문이 들어 있을 수 있어 클래스 이름과 오류 코드만 남긴다.
-        logger.error(
-            "청크 색인 실패, 분석 결과는 유지합니다: document_id=%s, analysis_id=%s, error=%s%s",
-            target.document_id,
-            target.analysis_id,
-            type(error).__name__,
-            f"({error.code})" if isinstance(error, TextEmbeddingError) else "",
-        )
-        return
-    logger.info(
-        "청크 색인 %s: document_id=%s, analysis_id=%s, chunks=%d",
-        "완료" if replaced else "건너뜀(삭제된 문서 또는 더 새 분석)",
-        target.document_id,
-        target.analysis_id,
-        len(chunks),
-    )
 
 
 def _record_failure(

@@ -758,7 +758,7 @@ def test_chunk_calculation_failure_keeps_analysis_result(
     def fail(pages: Sequence[PageText]) -> list[DocumentChunk]:
         raise OSError(CHUNK_SOURCE_TEXT)
 
-    monkeypatch.setattr("app.application.use_cases.analyze_document.chunk_pages", fail)
+    monkeypatch.setattr("app.application.use_cases.index_document_chunks.chunk_pages", fail)
     repository = FakeRepository()
     chunk_repository = FakeChunkRepository()
 

@@ -178,7 +178,11 @@ def test_skips_already_indexed_analysis_without_embedding() -> None:
 
     result = run(repository, embedder)
 
-    assert result.skip_reason is ChunkIndexSkipReason.ALREADY_INDEXED
+    assert result == ChunkIndexResult(
+        ChunkIndexOutcome.SKIPPED,
+        analysis_id=ANALYSIS_ID,
+        skip_reason=ChunkIndexSkipReason.ALREADY_INDEXED,
+    )
     assert repository.call_names() == ["find_index_target"]
     assert embedder.calls == []
 
@@ -214,22 +218,24 @@ def test_superseded_replacement_is_skipped() -> None:
 
 
 @pytest.mark.parametrize(
-    "arguments",
+    ("arguments", "analysis_id"),
     [
-        {"replace_error": ValueError(SOURCE_TEXT)},
-        {"target_error": OSError(SOURCE_TEXT)},
+        ({"replace_error": ValueError(SOURCE_TEXT)}, ANALYSIS_ID),
+        # 대상 조회에서 실패하면 분석 id를 아직 모른다.
+        ({"target_error": OSError(SOURCE_TEXT)}, None),
     ],
     ids=["replace_fails", "target_lookup_fails"],
 )
 def test_unexpected_error_returns_failed(
-    arguments: dict[str, Exception], caplog: pytest.LogCaptureFixture
+    arguments: dict[str, Exception], analysis_id: UUID | None, caplog: pytest.LogCaptureFixture
 ) -> None:
     """저장소 예외는 올리지 않고 UNEXPECTED_ERROR로 돌려준다. 로그에는 클래스 이름만 남는다."""
     with caplog.at_level(logging.ERROR):
         result = run(FakeChunkRepository(**arguments))
 
-    assert result.outcome is ChunkIndexOutcome.FAILED
-    assert result.error_code == "UNEXPECTED_ERROR"
+    assert result == ChunkIndexResult(
+        ChunkIndexOutcome.FAILED, analysis_id=analysis_id, error_code="UNEXPECTED_ERROR"
+    )
     assert next(iter(arguments.values())).__class__.__name__ in caplog.text
     assert SOURCE_TEXT not in caplog.text
 

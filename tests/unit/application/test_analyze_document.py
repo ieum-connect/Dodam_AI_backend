@@ -29,6 +29,7 @@ from app.application.ports.text_embedder import (
     TextEmbeddings,
 )
 from app.application.use_cases.analyze_document import DocumentAnalysisResult, analyze_document
+from app.application.use_cases.index_document_chunks import ChunkIndexOutcome, ChunkIndexResult
 from app.domain.document.document_analysis import AnalysisFailure, DocumentStatus
 from app.domain.document.document_chunk import DocumentChunk, PageText
 from app.domain.document.document_page import PageOcrStatus, RenderedPage
@@ -46,6 +47,8 @@ ANALYSIS_ID = UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
 PAGE_ID = UUID("99999999-8888-7777-6666-555555555555")
 CHUNK_SOURCE_TEXT = "합성 청크 원문"
 OBJECT_KEY = f"documents/{DOCUMENT_ID}/original.pdf"
+# 기본 가짜 저장소는 원문 페이지 하나를 돌려줘 청크 하나로 색인된다.
+INDEXED_ONE = ChunkIndexResult(ChunkIndexOutcome.INDEXED, analysis_id=ANALYSIS_ID, chunk_count=1)
 TARGET = AnalysisTarget(
     document_id=DOCUMENT_ID,
     analysis_id=ANALYSIS_ID,
@@ -321,7 +324,7 @@ def test_all_pages_succeed_marks_ready() -> None:
         "fake-model",
     )
     assert result == DocumentAnalysisResult(
-        document_status=DocumentStatus.READY, usages=(USAGE, USAGE, USAGE)
+        document_status=DocumentStatus.READY, usages=(USAGE, USAGE, USAGE), index=INDEXED_ONE
     )
 
 
@@ -340,7 +343,7 @@ def test_some_pages_fail_marks_needs_review() -> None:
         "fake-model",
     )
     assert result == DocumentAnalysisResult(
-        document_status=DocumentStatus.NEEDS_REVIEW, usages=(USAGE, USAGE)
+        document_status=DocumentStatus.NEEDS_REVIEW, usages=(USAGE, USAGE), index=INDEXED_ONE
     )
 
 
@@ -652,7 +655,11 @@ def test_embedding_failure_keeps_analysis_and_stores_nothing(
         result = run(repository, chunk_repository=chunk_repository, embedder=embedder)
 
     assert result == DocumentAnalysisResult(
-        document_status=DocumentStatus.READY, usages=(USAGE, USAGE, USAGE)
+        document_status=DocumentStatus.READY,
+        usages=(USAGE, USAGE, USAGE),
+        index=ChunkIndexResult(
+            ChunkIndexOutcome.FAILED, analysis_id=ANALYSIS_ID, error_code="RATE_LIMITED"
+        ),
     )
     assert "replace_chunks" not in repository.call_names()
     assert "mark_failed" not in repository.call_names()
@@ -740,7 +747,11 @@ def test_chunking_failure_keeps_analysis_result(
         )
 
     assert result == DocumentAnalysisResult(
-        document_status=DocumentStatus.READY, usages=(USAGE, USAGE, USAGE)
+        document_status=DocumentStatus.READY,
+        usages=(USAGE, USAGE, USAGE),
+        index=ChunkIndexResult(
+            ChunkIndexOutcome.FAILED, analysis_id=ANALYSIS_ID, error_code="UNEXPECTED_ERROR"
+        ),
     )
     assert "mark_failed" not in repository.call_names()
     errors = [record for record in caplog.records if record.levelno == logging.ERROR]

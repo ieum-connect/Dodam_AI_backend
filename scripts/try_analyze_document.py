@@ -130,6 +130,12 @@ def main() -> None:
             f" (retryable={failure.retryable})"
         )
     print(f"페이지: 저장 {saved_pages}장, 추출 성공 {len(result.usages)}장")
+    if result.index is None:
+        print("색인: 실행 안 함")
+    else:
+        index = result.index
+        detail = index.skip_reason or index.error_code
+        print(f"색인: {index.outcome}" + (f"({detail})" if detail else ""))
     # 인용 때문에 남은 이전 청크가 있으면 청크 수가 임베딩 수보다 클 수 있다.
     print(f"청크: {saved_chunks}개, 임베딩: {saved_embeddings}개")
 

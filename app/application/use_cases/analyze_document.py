@@ -6,7 +6,7 @@
 
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -30,7 +30,10 @@ from app.application.ports.page_extractor import (
     VlmUsage,
 )
 from app.application.ports.text_embedder import TextEmbedder
-from app.application.use_cases.index_document_chunks import index_analysis_chunks
+from app.application.use_cases.index_document_chunks import (
+    ChunkIndexResult,
+    index_analysis_chunks,
+)
 from app.domain.document.document_analysis import AnalysisFailure, DocumentStatus
 from app.domain.document.page_split import PageSplitError
 from app.domain.operation.error_code import AnalysisErrorCode, FailedStep
@@ -104,11 +107,13 @@ class DocumentAnalysisResult:
 
     document_status는 기록한 문서 상태이고, 아무것도 바꾸지 않았으면 None이다.
     usages는 성공한 VLM 호출의 사용량이다. 아직 DB에 기록하지 않고 담아 두기만 한다.
+    index는 결과를 저장한 뒤 실행한 청크 색인의 결과이고, 색인을 실행하지 않았으면 None이다.
     """
 
     document_status: DocumentStatus | None
     failure: AnalysisFailure | None = None
     usages: tuple[VlmUsage, ...] = ()
+    index: ChunkIndexResult | None = None
 
 
 def analyze_document(
@@ -129,7 +134,8 @@ def analyze_document(
 
     문서가 없거나 삭제됐거나, 분석 작업이 없거나 이미 SUCCEEDED면 아무것도 바꾸지 않는다.
     예상 밖 예외가 나면 FAILED로 기록한 뒤 그 예외를 다시 올린다.
-    청킹·임베딩·교체가 실패하면 로그만 남긴다. 문서 상태와 추출 항목은 바뀌지 않는다.
+    청킹·임베딩·교체가 실패하면 로그를 남기고 결과의 index에 담는다. 문서 상태와 추출 항목은
+    바뀌지 않는다.
     """
     target = repository.find_target(document_id)
     # 시작 표시는 따로 commit해서 Spring 화면에 바로 보이게 한다.
@@ -158,12 +164,13 @@ def analyze_document(
         # 결과를 실제로 저장한 분석만 색인한다. 원문은 save_result가 기록한다.
         # 색인 실패는 결과로만 돌아오고 분석 결과를 바꾸지 않는다. 복구는 재색인이 한다.
         if result.document_status is not None and result.failure is None:
-            index_analysis_chunks(
+            index = index_analysis_chunks(
                 target.document_id,
                 target.analysis_id,
                 chunk_repository=chunk_repository,
                 embedder=embedder,
             )
+            return replace(result, index=index)
         return result
     except Exception as error:
         # 예외 메시지에는 원문이나 경로가 들어 있을 수 있어 클래스 이름만 남긴다.

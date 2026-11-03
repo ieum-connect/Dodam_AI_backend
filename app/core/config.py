@@ -37,6 +37,13 @@ class Settings(BaseSettings):
     openai_vlm_connect_timeout_seconds: float = Field(default=10, gt=0)
     openai_vlm_max_retries: int = Field(default=2, ge=0)
     openai_vlm_retry_backoff_seconds: float = Field(default=1.0, ge=0)
+    # 청크 적재와 질의 검색이 함께 쓰는 임베딩 설정. 다른 기능의 키로 대체하지 않는다.
+    embedding_api_key: SecretStr | None = None
+    embedding_model: str = Field(default="text-embedding-3-small", min_length=1)
+    embedding_dimensions: int = Field(default=768, gt=0)
+    embedding_timeout_seconds: float = Field(default=30, gt=0)
+    embedding_max_retries: int = Field(default=2, ge=0)
+    embedding_retry_backoff_seconds: float = Field(default=1.0, ge=0)
 
 
 @lru_cache

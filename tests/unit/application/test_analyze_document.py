@@ -23,6 +23,11 @@ from app.application.ports.page_extractor import (
     PageExtractionResult,
     VlmUsage,
 )
+from app.application.ports.text_embedder import (
+    TextEmbeddingError,
+    TextEmbeddingErrorCode,
+    TextEmbeddings,
+)
 from app.application.use_cases.analyze_document import DocumentAnalysisResult, analyze_document
 from app.domain.document.document_analysis import AnalysisFailure, DocumentStatus
 from app.domain.document.document_chunk import DocumentChunk, PageText
@@ -209,25 +214,60 @@ class FakeChunkRepository:
         calls: list[tuple] | None = None,
         find_error: Exception | None = None,
         save_error: Exception | None = None,
+        pages: list[PageText] | None = None,
+        replaced: bool = True,
     ) -> None:
         self.calls = [] if calls is None else calls
         self.find_error = find_error
         self.save_error = save_error
+        self.pages = (
+            [PageText(PAGE_ID, 1, PageOcrStatus.SUCCEEDED, CHUNK_SOURCE_TEXT)]
+            if pages is None
+            else pages
+        )
+        self.replaced = replaced
 
     def find_page_texts(self, document_id: UUID) -> list[PageText]:
-        """호출을 기록하고 합성 원문 페이지 한 장을 돌려준다."""
+        """호출을 기록하고 정해 둔 원문 페이지를 돌려준다."""
         self.calls.append(("find_page_texts", document_id))
         if self.find_error is not None:
             raise self.find_error
-        return [PageText(PAGE_ID, 1, PageOcrStatus.SUCCEEDED, CHUNK_SOURCE_TEXT)]
+        return self.pages
 
-    def save_chunks(
-        self, analysis_id: UUID, chunks: Sequence[DocumentChunk], created_at: datetime
-    ) -> None:
-        """받은 분석 id와 청크를 기록한다."""
-        self.calls.append(("save_chunks", analysis_id, list(chunks)))
+    def replace_chunks(
+        self,
+        document_id: UUID,
+        analysis_id: UUID,
+        chunks: Sequence[DocumentChunk],
+        embeddings: TextEmbeddings,
+        created_at: datetime,
+    ) -> bool:
+        """받은 문서·분석 id, 청크, 벡터를 기록한다."""
+        self.calls.append(
+            ("replace_chunks", document_id, analysis_id, list(chunks), embeddings.vectors)
+        )
         if self.save_error is not None:
             raise self.save_error
+        return self.replaced
+
+
+class FakeEmbedder:
+    """받은 텍스트를 기록하고 입력마다 합성 벡터 하나를 돌려주는 가짜 임베더."""
+
+    def __init__(self, calls: list[tuple] | None = None, error: Exception | None = None) -> None:
+        self.calls = [] if calls is None else calls
+        self.error = error
+
+    def embed(self, texts: Sequence[str]) -> TextEmbeddings:
+        """호출을 기록한다. 정해 둔 예외가 있으면 던진다."""
+        self.calls.append(("embed", list(texts)))
+        if self.error is not None:
+            raise self.error
+        return TextEmbeddings(
+            vectors=[[float(index)] for index in range(len(texts))],
+            model_name="fake-embedding",
+            dimensions=1,
+        )
 
 
 def run(
@@ -237,6 +277,7 @@ def run(
     writer: FakeWriter | None = None,
     extractor: FakeExtractor | None = None,
     chunk_repository: FakeChunkRepository | None = None,
+    embedder: FakeEmbedder | None = None,
 ) -> DocumentAnalysisResult:
     """가짜 포트로 유스케이스를 실행한다. 넘기지 않은 포트는 성공하는 가짜를 쓴다."""
     return analyze_document(
@@ -246,6 +287,7 @@ def run(
         repository=repository,
         page_repository=repository,
         chunk_repository=chunk_repository or FakeChunkRepository(),
+        embedder=embedder or FakeEmbedder(),
         extractor=extractor or FakeExtractor(),
         render_dpi=72,
         max_pages=5,
@@ -545,37 +587,109 @@ def test_original_error_is_raised_when_failure_record_also_fails() -> None:
     ],
     ids=["ready", "needs_review"],
 )
-def test_chunks_are_saved_after_result(
+def test_chunks_are_embedded_and_replaced_after_result(
     errors: dict[int, Exception], expected_status: DocumentStatus
 ) -> None:
-    """결과를 저장한 뒤 그 문서의 원문을 읽어 나눈 청크를 이 분석 id로 저장한다."""
+    """결과 저장 뒤 원문을 읽어 청크로 나누고, 그 원문을 임베딩한 벡터와 함께 교체를 부른다."""
     repository = FakeRepository()
     chunk_repository = FakeChunkRepository(calls=repository.calls)
+    embedder = FakeEmbedder(calls=repository.calls)
 
-    result = run(repository, extractor=FakeExtractor(errors), chunk_repository=chunk_repository)
+    result = run(
+        repository,
+        extractor=FakeExtractor(errors),
+        chunk_repository=chunk_repository,
+        embedder=embedder,
+    )
 
     assert result.document_status is expected_status
-    assert repository.call_names()[-3:] == ["save_result", "find_page_texts", "save_chunks"]
-    assert repository.calls[-2] == ("find_page_texts", DOCUMENT_ID)
-    name, analysis_id, chunks = repository.calls[-1]
-    assert (name, analysis_id) == ("save_chunks", ANALYSIS_ID)
+    assert repository.call_names()[-4:] == [
+        "save_result",
+        "find_page_texts",
+        "embed",
+        "replace_chunks",
+    ]
+    assert repository.calls[-3] == ("find_page_texts", DOCUMENT_ID)
+    assert repository.calls[-2] == ("embed", [CHUNK_SOURCE_TEXT])
+    name, document_id, analysis_id, chunks, vectors = repository.calls[-1]
+    assert (name, document_id, analysis_id) == ("replace_chunks", DOCUMENT_ID, ANALYSIS_ID)
     assert [(c.chunk_index, c.content, c.page_id, c.bounding_box) for c in chunks] == [
         (0, CHUNK_SOURCE_TEXT, PAGE_ID, None)
     ]
+    assert vectors == [[0.0]]
+
+
+def test_no_text_skips_embedding_but_still_replaces() -> None:
+    """청크가 없으면 임베딩을 부르지 않고, 이전 분석 벡터를 지우도록 빈 목록으로 교체한다."""
+    chunk_repository = FakeChunkRepository(
+        pages=[PageText(PAGE_ID, 1, PageOcrStatus.SKIPPED, None)]
+    )
+    embedder = FakeEmbedder()
+
+    run(FakeRepository(), chunk_repository=chunk_repository, embedder=embedder)
+
+    assert embedder.calls == []
+    assert chunk_repository.calls[-1] == (
+        "replace_chunks",
+        DOCUMENT_ID,
+        ANALYSIS_ID,
+        [],
+        [],
+    )
+
+
+def test_embedding_failure_keeps_analysis_and_stores_nothing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """임베딩이 끝내 실패하면 교체를 부르지 않아 벡터 없는 청크가 남지 않고, 분석 결과는 같다."""
+    repository = FakeRepository()
+    chunk_repository = FakeChunkRepository(calls=repository.calls)
+    embedder = FakeEmbedder(
+        calls=repository.calls, error=TextEmbeddingError(TextEmbeddingErrorCode.RATE_LIMITED)
+    )
+
+    with caplog.at_level(logging.ERROR):
+        result = run(repository, chunk_repository=chunk_repository, embedder=embedder)
+
+    assert result == DocumentAnalysisResult(
+        document_status=DocumentStatus.READY, usages=(USAGE, USAGE, USAGE)
+    )
+    assert "replace_chunks" not in repository.call_names()
+    assert "mark_failed" not in repository.call_names()
+    errors = [record for record in caplog.records if record.levelno == logging.ERROR]
+    assert len(errors) == 1
+    assert "TextEmbeddingError(RATE_LIMITED)" in errors[0].getMessage()
+    assert CHUNK_SOURCE_TEXT not in caplog.text
+
+
+def test_skipped_replacement_keeps_analysis_result(caplog: pytest.LogCaptureFixture) -> None:
+    """문서 삭제나 더 새 분석 때문에 교체를 건너뛰어도 결과는 같고 error 로그는 없다."""
+    repository = FakeRepository()
+
+    with caplog.at_level(logging.INFO):
+        result = run(repository, chunk_repository=FakeChunkRepository(replaced=False))
+
+    assert result.document_status is DocumentStatus.READY
+    assert "mark_failed" not in repository.call_names()
+    assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
+    assert "건너뜀" in caplog.text
 
 
 def test_no_chunking_when_all_pages_fail() -> None:
-    """분석이 FAILED로 끝나면 청킹을 부르지 않는다."""
+    """분석이 FAILED로 끝나면 청킹, 임베딩, 교체를 부르지 않는다."""
     chunk_repository = FakeChunkRepository()
+    embedder = FakeEmbedder()
     error = extraction_error(PageExtractionErrorCode.REFUSED)
 
     run(
         FakeRepository(),
         extractor=FakeExtractor({1: error, 2: error, 3: error}),
         chunk_repository=chunk_repository,
+        embedder=embedder,
     )
 
     assert chunk_repository.calls == []
+    assert embedder.calls == []
 
 
 def test_no_chunking_when_result_was_not_saved() -> None:
@@ -610,13 +724,14 @@ def test_no_chunking_for_non_target() -> None:
     [
         {"find_error": ConnectionError(CHUNK_SOURCE_TEXT)},
         {"save_error": IntegrityError("INSERT", {"content": CHUNK_SOURCE_TEXT}, Exception())},
+        {"save_error": ValueError(CHUNK_SOURCE_TEXT)},
     ],
-    ids=["find_fails", "save_conflict"],
+    ids=["find_fails", "replace_conflict", "replace_rejects"],
 )
 def test_chunking_failure_keeps_analysis_result(
     chunk_repository_arguments: dict[str, Exception], caplog: pytest.LogCaptureFixture
 ) -> None:
-    """청킹 저장소가 실패해도 반환값은 같고 mark_failed는 없다. 로그는 error에 원문 없이 남는다."""
+    """청크 저장소가 실패해도 반환값은 같고 mark_failed는 없다. 로그는 error에 원문 없이 남는다."""
     repository = FakeRepository()
 
     with caplog.at_level(logging.ERROR):

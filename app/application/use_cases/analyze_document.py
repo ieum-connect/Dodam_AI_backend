@@ -1,6 +1,7 @@
 """documentId 하나를 분석하는 유스케이스.
 
-원본 읽기 → 페이지 저장 → VLM 추출 → 추출 결과와 최종 상태 기록 → 청크 저장 순서로 실행한다.
+원본 읽기 → 페이지 저장 → VLM 추출 → 추출 결과와 최종 상태 기록 → 청크·임베딩 교체 순서로
+실행한다.
 """
 
 import logging
@@ -28,6 +29,7 @@ from app.application.ports.page_extractor import (
     PageExtractor,
     VlmUsage,
 )
+from app.application.ports.text_embedder import TextEmbedder, TextEmbeddingError, TextEmbeddings
 from app.domain.document.document_analysis import AnalysisFailure, DocumentStatus
 from app.domain.document.page_split import PageSplitError
 from app.domain.operation.error_code import AnalysisErrorCode, FailedStep
@@ -117,16 +119,17 @@ def analyze_document(
     repository: DocumentAnalysisRepository,
     page_repository: DocumentPageRepository,
     chunk_repository: DocumentChunkRepository,
+    embedder: TextEmbedder,
     extractor: PageExtractor,
     render_dpi: int,
     max_pages: int,
     max_page_side_px: int,
 ) -> DocumentAnalysisResult:
-    """문서 하나를 분석하고 결과와 상태를 기록한 뒤 페이지 원문을 청크로 저장한다.
+    """문서 하나를 분석하고 결과와 상태를 기록한 뒤 청크와 임베딩으로 색인한다.
 
     문서가 없거나 삭제됐거나, 분석 작업이 없거나 이미 SUCCEEDED면 아무것도 바꾸지 않는다.
     예상 밖 예외가 나면 FAILED로 기록한 뒤 그 예외를 다시 올린다.
-    청킹이 실패하면 로그만 남긴다. 문서 상태와 추출 항목은 바뀌지 않는다.
+    청킹·임베딩·교체가 실패하면 로그만 남긴다. 문서 상태와 추출 항목은 바뀌지 않는다.
     """
     target = repository.find_target(document_id)
     # 시작 표시는 따로 commit해서 Spring 화면에 바로 보이게 한다.
@@ -152,9 +155,9 @@ def analyze_document(
         # VLM 호출은 오래 걸리므로 DB 트랜잭션 밖에서 한다.
         outcomes = extract_pages(extractor, pages)
         result = _record_outcomes(repository, target, len(pages), outcomes)
-        # 결과를 실제로 저장한 분석만 청킹한다. 원문은 save_result가 기록한다.
+        # 결과를 실제로 저장한 분석만 색인한다. 원문은 save_result가 기록한다.
         if result.document_status is not None and result.failure is None:
-            _save_chunks(chunk_repository, target)
+            _index_chunks(chunk_repository, embedder, target)
         return result
     except Exception as error:
         # 예외 메시지에는 원문이나 경로가 들어 있을 수 있어 클래스 이름만 남긴다.
@@ -228,22 +231,36 @@ def _record_outcomes(
     return DocumentAnalysisResult(document_status=status if saved else None, usages=usages)
 
 
-def _save_chunks(chunk_repository: DocumentChunkRepository, target: AnalysisTarget) -> None:
+def _index_chunks(
+    chunk_repository: DocumentChunkRepository, embedder: TextEmbedder, target: AnalysisTarget
+) -> None:
+    """페이지 원문을 청크로 나누고 임베딩해 이전 분석의 청크·임베딩과 교체한다."""
     # 예외를 밖으로 올리면 이미 저장한 분석 결과가 FAILED로 바뀌므로 여기서 끝낸다.
     try:
         chunks = chunk_pages(chunk_repository.find_page_texts(target.document_id))
-        chunk_repository.save_chunks(target.analysis_id, chunks, datetime.now(UTC))
+        # 임베딩 호출은 오래 걸리므로 DB 트랜잭션 밖에서 끝낸다.
+        embeddings = (
+            embedder.embed([chunk.content for chunk in chunks])
+            if chunks
+            else TextEmbeddings(vectors=[], model_name="", dimensions=0)
+        )
+        # 청크가 없어도 교체해야 이전 분석의 임베딩이 검색에 남지 않는다.
+        replaced = chunk_repository.replace_chunks(
+            target.document_id, target.analysis_id, chunks, embeddings, datetime.now(UTC)
+        )
     except Exception as error:
-        # 예외 메시지에는 원문이 들어 있을 수 있어 클래스 이름만 남긴다.
+        # 예외 메시지에는 원문이 들어 있을 수 있어 클래스 이름과 오류 코드만 남긴다.
         logger.error(
-            "청킹 실패, 분석 결과는 유지합니다: document_id=%s, analysis_id=%s, error=%s",
+            "청크 색인 실패, 분석 결과는 유지합니다: document_id=%s, analysis_id=%s, error=%s%s",
             target.document_id,
             target.analysis_id,
             type(error).__name__,
+            f"({error.code})" if isinstance(error, TextEmbeddingError) else "",
         )
         return
     logger.info(
-        "청킹 완료: document_id=%s, analysis_id=%s, chunks=%d",
+        "청크 색인 %s: document_id=%s, analysis_id=%s, chunks=%d",
+        "완료" if replaced else "건너뜀(삭제된 문서 또는 더 새 분석)",
         target.document_id,
         target.analysis_id,
         len(chunks),

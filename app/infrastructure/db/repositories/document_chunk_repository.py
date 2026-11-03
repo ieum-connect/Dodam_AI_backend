@@ -50,18 +50,6 @@ class SqlAlchemyDocumentChunkRepository:
             for row in rows
         ]
 
-    def save_chunks(
-        self, analysis_id: UUID, chunks: Sequence[DocumentChunk], created_at: datetime
-    ) -> None:
-        """청크를 한 트랜잭션으로 넣는다. 충돌하면 이 트랜잭션만 롤백하고 예외를 올린다."""
-        if not chunks:
-            return
-        with self._session_factory.begin() as session:
-            session.execute(
-                insert(DocumentChunkModel),
-                [_chunk_row(uuid4(), analysis_id, chunk, created_at) for chunk in chunks],
-            )
-
     def replace_chunks(
         self,
         document_id: UUID,

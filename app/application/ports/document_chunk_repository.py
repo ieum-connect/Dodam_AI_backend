@@ -16,12 +16,6 @@ class DocumentChunkRepository(Protocol):
         """문서의 페이지 원문을 page_no 순서로 읽는다."""
         ...
 
-    def save_chunks(
-        self, analysis_id: UUID, chunks: Sequence[DocumentChunk], created_at: datetime
-    ) -> None:
-        """청크를 모두 넣는다. (analysis_id, chunk_index)가 충돌하면 전부 취소하고 예외를 올린다."""
-        ...
-
     def replace_chunks(
         self,
         document_id: UUID,

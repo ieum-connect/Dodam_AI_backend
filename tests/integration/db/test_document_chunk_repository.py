@@ -78,33 +78,6 @@ def fetch_analysis_status(session: Session, analysis_id: UUID) -> str:
     ).scalar_one()
 
 
-def test_save_inserts_all_fields(
-    db_session: Session,
-    session_factory: sessionmaker[Session],
-    analysis_id: UUID,
-    page_id: UUID,
-) -> None:
-    """청크의 모든 필드를 저장하고, bounding_box는 JSON null이 아닌 SQL NULL로 넣는다."""
-    repository = SqlAlchemyDocumentChunkRepository(session_factory)
-
-    repository.save_chunks(analysis_id, make_chunks(page_id, 0, 1), CREATED_AT)
-
-    rows = fetch_chunks(db_session, analysis_id)
-    assert [tuple(row) for row in rows] == [
-        (analysis_id, page_id, 0, "합성 청크 0", 10, CREATED_AT, True),
-        (analysis_id, page_id, 1, "합성 청크 1", 11, CREATED_AT, True),
-    ]
-
-
-def test_empty_chunks_insert_nothing(
-    db_session: Session, session_factory: sessionmaker[Session], analysis_id: UUID
-) -> None:
-    """청크 목록이 비어 있으면 아무 행도 만들지 않는다."""
-    SqlAlchemyDocumentChunkRepository(session_factory).save_chunks(analysis_id, [], CREATED_AT)
-
-    assert fetch_chunks(db_session, analysis_id) == []
-
-
 def test_find_page_texts_returns_only_this_document_in_page_order(
     db_session: Session, session_factory: sessionmaker[Session], document_id: UUID
 ) -> None:
@@ -121,69 +94,32 @@ def test_find_page_texts_returns_only_this_document_in_page_order(
     assert SqlAlchemyDocumentChunkRepository(session_factory).find_page_texts(uuid4()) == []
 
 
-def test_duplicate_chunk_index_rolls_back_only_that_transaction(
-    db_session: Session,
-    session_factory: sessionmaker[Session],
-    analysis_id: UUID,
-    page_id: UUID,
-) -> None:
-    """같은 번호를 다시 저장하면 IntegrityError가 나고 먼저 저장한 행과 분석 상태는 그대로다."""
-    repository = SqlAlchemyDocumentChunkRepository(session_factory)
-    repository.save_chunks(analysis_id, make_chunks(page_id, 0), CREATED_AT)
-    before = fetch_chunks(db_session, analysis_id)
-    status_before = fetch_analysis_status(db_session, analysis_id)
-
-    with pytest.raises(IntegrityError):
-        repository.save_chunks(
-            analysis_id,
-            [DocumentChunk(chunk_index=0, content="덮어쓰기 금지", page_id=page_id, token_count=1)],
-            CREATED_AT,
-        )
-
-    assert fetch_chunks(db_session, analysis_id) == before
-    assert fetch_analysis_status(db_session, analysis_id) == status_before
-
-
-def test_partial_conflict_leaves_no_new_rows(
-    db_session: Session,
-    session_factory: sessionmaker[Session],
-    analysis_id: UUID,
-    page_id: UUID,
-) -> None:
-    """새 번호와 중복 번호가 섞인 저장은 전체가 롤백되어 새 번호도 남지 않는다."""
-    repository = SqlAlchemyDocumentChunkRepository(session_factory)
-    repository.save_chunks(analysis_id, make_chunks(page_id, 1), CREATED_AT)
-
-    with pytest.raises(IntegrityError):
-        repository.save_chunks(analysis_id, make_chunks(page_id, 0, 1, 2), CREATED_AT)
-
-    assert [row.chunk_index for row in fetch_chunks(db_session, analysis_id)] == [1]
-
-
-def test_same_index_in_other_analysis_keeps_previous_chunks(
+def test_duplicate_chunk_index_rolls_back_whole_replacement(
     db_session: Session,
     session_factory: sessionmaker[Session],
     document_id: UUID,
     analysis_id: UUID,
     page_id: UUID,
 ) -> None:
-    """다른 분석에는 같은 번호를 저장할 수 있고, 이전 분석의 청크는 그대로 남는다."""
-    other_analysis_id = uuid4()
-    db_session.execute(
-        text(
-            "INSERT INTO document_analyses (id, document_id, parser_version)"
-            " VALUES (:id, :document_id, 'v1')"
-        ),
-        {"id": other_analysis_id, "document_id": document_id},
-    )
-    repository = SqlAlchemyDocumentChunkRepository(session_factory)
-    repository.save_chunks(analysis_id, make_chunks(page_id, 0), CREATED_AT)
-    before = fetch_chunks(db_session, analysis_id)
+    """DB 유일 키 위반으로 실패하면 새 행이 하나도 남지 않고 이전 데이터와 분석 상태는 그대로다."""
+    old_analysis_id = insert_analysis(db_session, document_id, days=-1)
+    old_id = insert_old_chunk(db_session, old_analysis_id, page_id, 0)
+    status_before = fetch_analysis_status(db_session, analysis_id)
+    duplicate = make_chunks(page_id, 0) * 2
 
-    repository.save_chunks(other_analysis_id, make_chunks(page_id, 0), CREATED_AT)
+    with pytest.raises(IntegrityError):
+        SqlAlchemyDocumentChunkRepository(session_factory).replace_chunks(
+            document_id,
+            analysis_id,
+            duplicate,
+            make_embeddings(make_vector(1.0), make_vector(2.0)),
+            CREATED_AT,
+        )
 
-    assert fetch_chunks(db_session, analysis_id) == before
-    assert [row.chunk_index for row in fetch_chunks(db_session, other_analysis_id)] == [0]
+    assert chunk_ids_of(db_session, analysis_id) == []
+    assert chunk_ids_of(db_session, old_analysis_id) == [old_id]
+    assert embedded_source_ids(db_session) == {old_id}
+    assert fetch_analysis_status(db_session, analysis_id) == status_before
 
 
 def make_vector(seed: float, dimensions: int = DIMENSIONS) -> list[float]:

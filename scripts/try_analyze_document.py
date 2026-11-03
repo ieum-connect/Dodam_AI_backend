@@ -1,6 +1,6 @@
 """문서 하나로 analyze_document를 실제 DB, 로컬 저장소, OpenAI에 한 번 돌려 보는 수동 확인 스크립트.
 
-자동 테스트에 포함되지 않는다. 실행할 때마다 OpenAI 비용이 들고 DB 상태가 바뀐다.
+자동 테스트에 포함되지 않는다. 실행할 때마다 OpenAI 비용(VLM, 임베딩)이 들고 DB 상태가 바뀐다.
 저장소 루트에서 실행한다. documentId를 주지 않으면 삭제되지 않은 가장 최근 문서를 고른다.
 document_status가 '변경 없음'이면 문서가 없거나 삭제됐거나, 최신 분석이 이미 SUCCEEDED인 경우다.
 
@@ -17,7 +17,10 @@ from app.application.services.retrying_page_extractor import RetryingPageExtract
 from app.application.use_cases.analyze_document import analyze_document
 from app.core.config import get_settings
 from app.infrastructure.db.models.document import DocumentModel
+from app.infrastructure.db.models.document_analysis import DocumentAnalysisModel
+from app.infrastructure.db.models.document_chunk import DocumentChunkModel
 from app.infrastructure.db.models.document_page import DocumentPageModel
+from app.infrastructure.db.models.embedding import SOURCE_TYPE_DOCUMENT_CHUNK, EmbeddingModel
 from app.infrastructure.db.repositories.document_analysis_repository import (
     SqlAlchemyDocumentAnalysisRepository,
 )
@@ -25,6 +28,7 @@ from app.infrastructure.db.repositories.document_chunk_repository import (
     SqlAlchemyDocumentChunkRepository,
 )
 from app.infrastructure.db.session import get_session_factory
+from app.infrastructure.providers.embedding import create_text_embedder
 from app.infrastructure.providers.llm.openai_page_extractor import create_page_extractor
 from app.infrastructure.storage.local_document_storage import LocalDocumentStorage
 
@@ -64,6 +68,7 @@ def main() -> None:
         max_retries=settings.openai_vlm_max_retries,
         backoff_seconds=settings.openai_vlm_retry_backoff_seconds,
     )
+    embedder = create_text_embedder(settings)
 
     print(f"document_id: {document_id}")
     try:
@@ -75,6 +80,7 @@ def main() -> None:
                 repository=repository,
                 page_repository=repository,
                 chunk_repository=SqlAlchemyDocumentChunkRepository(session_factory),
+                embedder=embedder,
                 extractor=extractor,
                 render_dpi=settings.document_render_dpi,
                 max_pages=settings.document_max_pages,
@@ -91,8 +97,29 @@ def main() -> None:
                 .select_from(DocumentPageModel)
                 .where(DocumentPageModel.document_id == document_id)
             ).scalar_one()
+            # 같은 문서의 모든 analysis 청크 수와, 그 청크를 가리키는 임베딩 수를 센다.
+            chunk_ids = (
+                select(DocumentChunkModel.id)
+                .join(
+                    DocumentAnalysisModel,
+                    DocumentAnalysisModel.id == DocumentChunkModel.analysis_id,
+                )
+                .where(DocumentAnalysisModel.document_id == document_id)
+            )
+            saved_chunks = session.execute(
+                select(func.count()).select_from(chunk_ids.subquery())
+            ).scalar_one()
+            saved_embeddings = session.execute(
+                select(func.count())
+                .select_from(EmbeddingModel)
+                .where(
+                    EmbeddingModel.source_type == SOURCE_TYPE_DOCUMENT_CHUNK,
+                    EmbeddingModel.source_id.in_(chunk_ids),
+                )
+            ).scalar_one()
     finally:
         inner.close()
+        embedder.close()
 
     # objectKey, 경로, 추출 원문은 출력하지 않는다.
     print(f"document_status: {result.document_status or '변경 없음'}")
@@ -103,6 +130,8 @@ def main() -> None:
             f" (retryable={failure.retryable})"
         )
     print(f"페이지: 저장 {saved_pages}장, 추출 성공 {len(result.usages)}장")
+    # 인용 때문에 남은 이전 청크가 있으면 청크 수가 임베딩 수보다 클 수 있다.
+    print(f"청크: {saved_chunks}개, 임베딩: {saved_embeddings}개")
 
 
 if __name__ == "__main__":

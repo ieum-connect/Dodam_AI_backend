@@ -47,13 +47,7 @@ class SqlAlchemyDocumentAnalysisRepository:
             ).one_or_none()
             if document is None:
                 return None
-            # 최신 분석을 고르는 기준은 Spring 목록 쿼리와 같다.
-            analysis_id = session.execute(
-                select(DocumentAnalysisModel.id)
-                .where(DocumentAnalysisModel.document_id == document_id)
-                .order_by(DocumentAnalysisModel.created_at.desc(), DocumentAnalysisModel.id.desc())
-                .limit(1)
-            ).scalar_one_or_none()
+            analysis_id = _latest_analysis_id(session, document_id)
         if analysis_id is None:
             return None
         return AnalysisTarget(
@@ -110,10 +104,24 @@ class SqlAlchemyDocumentAnalysisRepository:
         model_version: str | None,
         completed_at: datetime,
     ) -> bool:
-        """추출 항목 교체, 페이지 원문 기록, 분석과 문서 상태 변경을 한 트랜잭션으로 묶는다."""
+        """추출 항목 교체, 페이지 원문 기록, 분석과 문서 상태 변경을 한 트랜잭션으로 묶는다.
+
+        최신 분석이 아니면 이 분석 행만 SUCCEEDED로 기록하고 False를 반환한다.
+        """
         with self._session_factory.begin() as session:
-            if not _update_document(session, target, document_status, completed_at):
+            is_latest = _lock_document_and_check_latest(session, target)
+            if is_latest is None:
                 return False
+            if not is_latest:
+                _update_analysis(
+                    session,
+                    target,
+                    status=AnalysisStatus.SUCCEEDED,
+                    completed_at=completed_at,
+                    model_version=model_version,
+                )
+                return False
+            _update_document(session, target, document_status, completed_at)
             _delete_items(session, target)
             page_ids = dict(
                 session.execute(
@@ -163,10 +171,24 @@ class SqlAlchemyDocumentAnalysisRepository:
         """추출 항목 삭제, 페이지 FAILED, 실패 기록, 문서와 분석 FAILED를 한 트랜잭션으로 묶는다.
 
         설명이 참조해 항목을 지울 수 없으면 항목은 남기고 나머지만 기록한다.
+        최신 분석이 아니면 이 분석 행의 실패 기록만 남기고 False를 반환한다.
         """
         with self._session_factory.begin() as session:
-            if not _update_document(session, target, DocumentStatus.FAILED, completed_at):
+            is_latest = _lock_document_and_check_latest(session, target)
+            if is_latest is None:
                 return False
+            failed_values = {
+                "status": AnalysisStatus.FAILED,
+                "completed_at": completed_at,
+                "error_code": failure.error_code,
+                "failed_step": failure.failed_step,
+                "error_message": failure.detail_code,
+                "retryable": failure.retryable,
+            }
+            if not is_latest:
+                _update_analysis(session, target, **failed_values)
+                return False
+            _update_document(session, target, DocumentStatus.FAILED, completed_at)
             try:
                 with session.begin_nested():
                     _delete_items(session, target)
@@ -179,17 +201,41 @@ class SqlAlchemyDocumentAnalysisRepository:
                     type(error).__name__,
                 )
             _mark_pages_failed(session, target)
-            _update_analysis(
-                session,
-                target,
-                status=AnalysisStatus.FAILED,
-                completed_at=completed_at,
-                error_code=failure.error_code,
-                failed_step=failure.failed_step,
-                error_message=failure.detail_code,
-                retryable=failure.retryable,
-            )
+            _update_analysis(session, target, **failed_values)
             return True
+
+
+def _latest_analysis_id(session: Session, document_id: UUID) -> UUID | None:
+    """문서의 최신 분석 id. 정렬 기준은 Spring 목록 쿼리, replace_chunks와 같다."""
+    return session.execute(
+        select(DocumentAnalysisModel.id)
+        .where(DocumentAnalysisModel.document_id == document_id)
+        .order_by(DocumentAnalysisModel.created_at.desc(), DocumentAnalysisModel.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
+def _lock_document_and_check_latest(session: Session, target: AnalysisTarget) -> bool | None:
+    """문서 행을 잠그고 이 분석이 최신인지 돌려준다. 문서가 없거나 삭제됐으면 None이다.
+
+    잠금은 같은 문서의 결과 저장·실패 기록·청크 교체를 한 줄로 세운다. 늦게 끝난 이전 분석이
+    공유 페이지 원문과 문서 상태를 덮어쓰지 않게 한다.
+    """
+    locked = session.execute(
+        select(DocumentModel.id)
+        .where(DocumentModel.id == target.document_id, *DOCUMENT_NOT_DELETED)
+        .with_for_update()
+    ).scalar_one_or_none()
+    if locked is None:
+        return None
+    if _latest_analysis_id(session, target.document_id) == target.analysis_id:
+        return True
+    logger.info(
+        "최신 분석이 아니어서 문서와 페이지를 덮어쓰지 않습니다: document_id=%s, analysis_id=%s",
+        target.document_id,
+        target.analysis_id,
+    )
+    return False
 
 
 def _update_document(

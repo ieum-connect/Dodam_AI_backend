@@ -24,6 +24,9 @@ class DocumentAnalysisRepository(Protocol):
     """분석 상태와 추출 결과를 저장하는 인터페이스. 메서드 하나가 트랜잭션 하나다.
 
     상태를 바꾸는 메서드는 문서가 삭제됐으면 아무것도 바꾸지 않고 False를 반환한다.
+    save_result와 mark_failed는 이 분석이 문서의 최신 분석이 아니어도 False를 반환한다. 이때는
+    이 분석 행의 상태만 기록하고, 문서 상태·페이지·추출 항목은 바꾸지 않는다. 최신 판정 기준은
+    find_target과 같다.
     """
 
     def find_target(self, document_id: UUID) -> AnalysisTarget | None:

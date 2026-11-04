@@ -10,6 +10,11 @@ from sqlalchemy import Row, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.application.ports.document_analysis_repository import AnalysisTarget
+from app.application.ports.text_embedder import TextEmbeddings
+from app.application.use_cases.index_document_chunks import (
+    ChunkIndexOutcome,
+    index_document_chunks,
+)
 from app.domain.document.document_analysis import (
     AnalysisFailure,
     AnalysisStatus,
@@ -27,6 +32,9 @@ from app.domain.operation.error_code import AnalysisErrorCode, FailedStep
 from app.infrastructure.db.models.document import DocumentModel
 from app.infrastructure.db.repositories.document_analysis_repository import (
     SqlAlchemyDocumentAnalysisRepository,
+)
+from app.infrastructure.db.repositories.document_chunk_repository import (
+    SqlAlchemyDocumentChunkRepository,
 )
 
 STARTED_AT = datetime(2026, 10, 1, 9, 0, tzinfo=UTC)
@@ -437,6 +445,111 @@ def test_mark_started_clears_previous_failure(
     assert (analysis.status, analysis.completed_at) == (AnalysisStatus.RUNNING, None)
     assert (analysis.error_code, analysis.failed_step, analysis.error_message) == (None, None, None)
     assert analysis.retryable is False
+
+
+class RecordingEmbedder:
+    """받은 텍스트를 기록하고 입력마다 768차원 합성 벡터를 돌려주는 가짜 임베더."""
+
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+
+    def embed(self, texts: Sequence[str]) -> TextEmbeddings:
+        """텍스트를 기록하고 합성 벡터를 돌려준다."""
+        self.texts.extend(texts)
+        return TextEmbeddings(
+            vectors=[[1.0] + [0.0] * 767 for _ in texts], model_name="fake", dimensions=768
+        )
+
+
+def start_newer_analysis(
+    db_session: Session, repository: SqlAlchemyDocumentAnalysisRepository, older: AnalysisTarget
+) -> AnalysisTarget:
+    """older보다 created_at이 늦은 분석 행을 만들고 시작한 뒤 그 대상을 돌려준다."""
+    db_session.execute(
+        text(
+            "INSERT INTO document_analyses (id, document_id, parser_version, created_at)"
+            " VALUES (:id, :document_id, 'v1', CURRENT_TIMESTAMP + INTERVAL '1 second')"
+        ),
+        {"id": uuid4(), "document_id": older.document_id},
+    )
+    newer = repository.find_target(older.document_id)
+    assert newer is not None and newer.analysis_id != older.analysis_id
+    assert repository.mark_started(newer, STARTED_AT) is True
+    return newer
+
+
+def test_late_older_result_does_not_overwrite_newer_page_text(
+    db_session: Session,
+    session_factory: sessionmaker[Session],
+    repository: SqlAlchemyDocumentAnalysisRepository,
+    target: AnalysisTarget,
+) -> None:
+    """늦게 끝난 이전 분석은 공유 원문·문서 상태를 덮어쓰지 않아 최신 청크에 최신 원문이 남는다."""
+    repository.mark_started(target, STARTED_AT)
+    newer = start_newer_analysis(db_session, repository, target)
+    newer_pages = {1: make_extraction(make_item("b"), raw_text="B 원문")}
+    assert repository.save_result(
+        newer, DocumentStatus.NEEDS_REVIEW, newer_pages, "fake-model", COMPLETED_AT
+    )
+    document_before = fetch_document(db_session, target.document_id)
+
+    older_pages = {
+        1: make_extraction(make_item("a"), raw_text="A 원문"),
+        2: make_extraction(make_item("a2"), raw_text="A 2쪽"),
+    }
+    saved = repository.save_result(
+        target, DocumentStatus.READY, older_pages, "old-model", COMPLETED_AT
+    )
+    embedder = RecordingEmbedder()
+    result = index_document_chunks(
+        target.document_id,
+        chunk_repository=SqlAlchemyDocumentChunkRepository(session_factory),
+        embedder=embedder,
+    )
+
+    contents = db_session.scalars(
+        text("SELECT content FROM document_chunks WHERE analysis_id = :id"),
+        {"id": newer.analysis_id},
+    ).all()
+    assert (result.outcome, result.analysis_id) == (ChunkIndexOutcome.INDEXED, newer.analysis_id)
+    assert not any("A " in content for content in contents)
+    assert any("B 원문" in content for content in contents)
+    assert not any("A " in sent for sent in embedder.texts)
+    assert fetch_pages(db_session, target.document_id) == [
+        (1, PageOcrStatus.SUCCEEDED, "B 원문"),
+        (2, PageOcrStatus.FAILED, None),
+    ]
+    assert fetch_document(db_session, target.document_id) == document_before
+    assert saved is False
+    assert fetch_items(db_session, target.analysis_id) == []
+    older = fetch_analysis(db_session, target.analysis_id)
+    assert (older.status, older.model_version) == (AnalysisStatus.SUCCEEDED, "old-model")
+
+
+def test_late_older_failure_does_not_overwrite_newer_result(
+    db_session: Session, repository: SqlAlchemyDocumentAnalysisRepository, target: AnalysisTarget
+) -> None:
+    """최신 분석 성공 뒤 이전 분석이 실패해도 원문·문서 상태는 남고 이전 분석 행만 FAILED다."""
+    repository.mark_started(target, STARTED_AT)
+    newer = start_newer_analysis(db_session, repository, target)
+    newer_pages = {1: make_extraction(make_item("b"), raw_text="B 원문")}
+    repository.save_result(
+        newer, DocumentStatus.NEEDS_REVIEW, newer_pages, "fake-model", COMPLETED_AT
+    )
+    document_before = fetch_document(db_session, target.document_id)
+
+    saved = repository.mark_failed(target, FAILURE, COMPLETED_AT)
+
+    assert fetch_pages(db_session, target.document_id) == [
+        (1, PageOcrStatus.SUCCEEDED, "B 원문"),
+        (2, PageOcrStatus.FAILED, None),
+    ]
+    assert fetch_document(db_session, target.document_id) == document_before
+    assert saved is False
+    older = fetch_analysis(db_session, target.analysis_id)
+    assert (older.status, older.completed_at) == (AnalysisStatus.FAILED, COMPLETED_AT)
+    assert (older.error_code, older.error_message) == ("VLM_TIMEOUT", "TIMEOUT")
+    assert fetch_analysis(db_session, newer.analysis_id).status == AnalysisStatus.SUCCEEDED
 
 
 def test_document_model_reads_patient_and_visit_ids(

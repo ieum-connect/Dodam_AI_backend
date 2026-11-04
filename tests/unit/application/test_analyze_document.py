@@ -717,6 +717,35 @@ def test_no_chunking_when_result_was_not_saved() -> None:
     assert chunk_repository.calls == []
 
 
+def test_failure_not_recorded_on_document_keeps_failure_without_status() -> None:
+    """더 새 분석이 있어 문서에 실패를 기록하지 못하면 document_status는 None, failure는 남는다."""
+
+    class SupersededRepository(FakeRepository):
+        """실패 기록이 언제나 False인 가짜 저장소."""
+
+        def mark_failed(self, *args: Any) -> bool:
+            """최신 분석이 아닌 경우처럼 False를 돌려준다."""
+            self.calls.append(("mark_failed",))
+            return False
+
+    repository = SupersededRepository()
+    chunk_repository = FakeChunkRepository()
+    error = extraction_error(PageExtractionErrorCode.REFUSED)
+
+    result = run(
+        repository,
+        extractor=FakeExtractor({1: error, 2: error, 3: error}),
+        chunk_repository=chunk_repository,
+    )
+
+    assert result.document_status is None
+    assert result.failure is not None
+    assert result.failure.detail_code == PageExtractionErrorCode.REFUSED.value
+    assert result.index is None
+    assert repository.call_names()[-1] == "mark_failed"
+    assert chunk_repository.calls == []
+
+
 def test_no_chunking_for_non_target() -> None:
     """분석 대상이 아니면 청킹을 부르지 않는다."""
     chunk_repository = FakeChunkRepository()

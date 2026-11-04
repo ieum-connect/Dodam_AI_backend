@@ -1,6 +1,6 @@
 """DB 통합 테스트 픽스처. 로컬 PostgreSQL에 붙고, 테스트마다 롤백해 데이터를 남기지 않는다."""
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from uuid import UUID, uuid4
 
 import pytest
@@ -9,6 +9,8 @@ from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.application.ports.text_embedder import TextEmbeddings
+from app.infrastructure.db.models.embedding import EMBEDDING_DIMENSIONS
 from app.infrastructure.db.session import get_engine
 
 
@@ -122,6 +124,31 @@ def explained_item_id(db_session: Session, document_id: UUID, analysis_id: UUID)
         {"id": uuid4(), "section_id": section_id, "item_id": item_id},
     )
     return item_id
+
+
+class RecordingEmbedder:
+    """받은 텍스트를 기록하고 입력마다 768차원 합성 벡터를 돌려주는 가짜 임베더."""
+
+    def __init__(self) -> None:
+        self.calls: list[list[str]] = []
+
+    def embed(self, texts: Sequence[str]) -> TextEmbeddings:
+        """텍스트를 기록하고 합성 벡터를 돌려준다."""
+        self.calls.append(list(texts))
+        return TextEmbeddings(
+            vectors=[[1.0] + [0.0] * (EMBEDDING_DIMENSIONS - 1) for _ in texts],
+            model_name="fake-embedding",
+            dimensions=EMBEDDING_DIMENSIONS,
+        )
+
+    def close(self) -> None:
+        """닫을 연결이 없다."""
+
+
+@pytest.fixture
+def embedder() -> RecordingEmbedder:
+    """유료 API 대신 쓰는 기록용 가짜 임베더."""
+    return RecordingEmbedder()
 
 
 @pytest.fixture

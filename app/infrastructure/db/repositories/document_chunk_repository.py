@@ -5,11 +5,11 @@ from collections.abc import Sequence
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import Select, delete, exists, func, insert, select
+from sqlalchemy import ColumnElement, Exists, Row, Select, delete, func, insert, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.application.ports.document_chunk_repository import IndexTarget
+from app.application.ports.document_chunk_repository import ChunkText, IndexTarget
 from app.application.ports.text_embedder import TextEmbeddings
 from app.domain.document.document_analysis import AnalysisStatus
 from app.domain.document.document_chunk import DocumentChunk, PageText
@@ -53,7 +53,7 @@ class SqlAlchemyDocumentChunkRepository:
         ]
 
     def find_index_target(self, document_id: UUID) -> IndexTarget | None:
-        """삭제되지 않은 문서의 최신 분석 id·상태와 그 분석의 청크 유무를 읽는다."""
+        """삭제되지 않은 문서의 최신 분석 id·상태와 청크 수, 임베딩 없는 청크 수를 읽는다."""
         with self._session_factory() as session:
             document = session.execute(
                 select(DocumentModel.id).where(
@@ -67,15 +67,35 @@ class SqlAlchemyDocumentChunkRepository:
             ).one_or_none()
             if latest is None:
                 return None
-            has_chunks = session.execute(
-                select(exists().where(DocumentChunkModel.analysis_id == latest.id))
-            ).scalar_one()
+            counts = session.execute(
+                select(
+                    func.count(),
+                    func.count().filter(~_has_embedding(DocumentChunkModel.id)),
+                ).where(DocumentChunkModel.analysis_id == latest.id)
+            ).one()
         return IndexTarget(
-            analysis_id=latest.id, status=AnalysisStatus(latest.status), has_chunks=has_chunks
+            analysis_id=latest.id,
+            status=AnalysisStatus(latest.status),
+            chunk_count=counts[0],
+            missing_embedding_count=counts[1],
         )
 
+    def find_chunks_without_embedding(self, analysis_id: UUID) -> list[ChunkText]:
+        """분석의 청크 중 임베딩이 없는 것을 chunk_index 순서로 읽는다."""
+        with self._session_factory() as session:
+            rows = session.execute(
+                select(DocumentChunkModel.id, DocumentChunkModel.content)
+                .where(
+                    DocumentChunkModel.analysis_id == analysis_id,
+                    ~_has_embedding(DocumentChunkModel.id),
+                )
+                .order_by(DocumentChunkModel.chunk_index)
+            ).all()
+        return [ChunkText(chunk_id=row.id, content=row.content) for row in rows]
+
     def find_unindexed_document_ids(self) -> list[UUID]:
-        """최신 분석이 SUCCEEDED이고 원문이 있는데 DOCUMENT_CHUNK 임베딩이 없는 문서 id 목록."""
+        """삭제되지 않았고 최신 분석이 SUCCEEDED이며 원문이 있는 문서 중,
+        최신 분석의 청크가 없거나 임베딩이 없는 청크가 있는 문서 id 목록."""
         # 문서마다 최신 분석 하나(rank 1). 정렬 기준은 _latest_analysis_query와 같다.
         ranked = select(
             DocumentAnalysisModel.document_id,
@@ -89,14 +109,17 @@ class SqlAlchemyDocumentChunkRepository:
             .label("rank"),
         ).subquery()
         latest = select(ranked).where(ranked.c.rank == 1).subquery()
-        has_embedding = (
+        has_chunk = (
             select(DocumentChunkModel.id)
-            .join(
-                EmbeddingModel,
-                (EmbeddingModel.source_id == DocumentChunkModel.id)
-                & (EmbeddingModel.source_type == SOURCE_TYPE_DOCUMENT_CHUNK),
-            )
             .where(DocumentChunkModel.analysis_id == latest.c.id)
+            .exists()
+        )
+        has_chunk_without_embedding = (
+            select(DocumentChunkModel.id)
+            .where(
+                DocumentChunkModel.analysis_id == latest.c.id,
+                ~_has_embedding(DocumentChunkModel.id),
+            )
             .exists()
         )
         # 원문이 없으면 청크가 0개라 임베딩이 생기지 않는다. 목록에 계속 남지 않게 뺀다.
@@ -116,7 +139,7 @@ class SqlAlchemyDocumentChunkRepository:
                     .where(
                         *DOCUMENT_NOT_DELETED,
                         latest.c.status == AnalysisStatus.SUCCEEDED,
-                        ~has_embedding,
+                        ~has_chunk | has_chunk_without_embedding,
                         has_text,
                     )
                     .order_by(latest.c.document_id)
@@ -140,11 +163,7 @@ class SqlAlchemyDocumentChunkRepository:
             raise ValueError("청크 수와 벡터 수가 다릅니다.")
         with self._session_factory.begin() as session:
             # 문서 행을 잠가 같은 문서의 교체 두 개가 섞이지 않게 한다.
-            document = session.execute(
-                select(DocumentModel.patient_id, DocumentModel.visit_id)
-                .where(DocumentModel.id == document_id, *DOCUMENT_NOT_DELETED)
-                .with_for_update()
-            ).one_or_none()
+            document = _lock_document(session, document_id)
             if document is None or _latest_analysis_id(session, document_id) != analysis_id:
                 # 늦게 끝난 이전 분석이 더 새 분석의 벡터를 지우지 않게 한다.
                 return False
@@ -161,23 +180,94 @@ class SqlAlchemyDocumentChunkRepository:
                 session.execute(
                     insert(EmbeddingModel),
                     [
-                        {
-                            "id": uuid4(),
-                            "source_type": SOURCE_TYPE_DOCUMENT_CHUNK,
-                            "source_id": chunk_id,
-                            "patient_id": document.patient_id,
-                            "visit_id": document.visit_id,
-                            "embedding": vector,
-                            "model_name": embeddings.model_name,
-                            "dimensions": len(vector),
-                            "created_at": created_at,
-                        }
+                        _embedding_row(
+                            chunk_id, document, vector, embeddings.model_name, created_at
+                        )
                         for chunk_id, vector in zip(chunk_ids, embeddings.vectors, strict=True)
                     ],
                 )
             if old_chunk_ids:
                 _delete_old_chunks(session, document_id, analysis_id, old_chunk_ids)
             return True
+
+    def add_missing_embeddings(
+        self,
+        document_id: UUID,
+        analysis_id: UUID,
+        chunks: Sequence[ChunkText],
+        embeddings: TextEmbeddings,
+        created_at: datetime,
+    ) -> bool:
+        """받은 청크 중 잠금 안에서 아직 임베딩이 없는 청크에만 임베딩을 넣는다.
+
+        청크는 지우지 않으므로 인용 FK나 청크 유일 키에 걸리지 않는다.
+        """
+        if len(chunks) != len(embeddings.vectors):
+            raise ValueError("청크 수와 벡터 수가 다릅니다.")
+        with self._session_factory.begin() as session:
+            document = _lock_document(session, document_id)
+            if document is None or _latest_analysis_id(session, document_id) != analysis_id:
+                return False
+            # 잠금 전에 읽은 목록이라, 그 사이 다른 실행이 채운 청크는 다시 넣지 않는다.
+            still_missing = set(
+                session.execute(
+                    select(DocumentChunkModel.id).where(
+                        DocumentChunkModel.id.in_([chunk.chunk_id for chunk in chunks]),
+                        DocumentChunkModel.analysis_id == analysis_id,
+                        ~_has_embedding(DocumentChunkModel.id),
+                    )
+                ).scalars()
+            )
+            rows = [
+                _embedding_row(chunk.chunk_id, document, vector, embeddings.model_name, created_at)
+                for chunk, vector in zip(chunks, embeddings.vectors, strict=True)
+                if chunk.chunk_id in still_missing
+            ]
+            if rows:
+                session.execute(insert(EmbeddingModel), rows)
+            return True
+
+
+def _lock_document(session: Session, document_id: UUID) -> Row[tuple[UUID, UUID]] | None:
+    """삭제되지 않은 문서 행을 잠그고 환자·방문 id를 읽는다. 같은 문서의 쓰기를 한 줄로 세운다."""
+    return session.execute(
+        select(DocumentModel.patient_id, DocumentModel.visit_id)
+        .where(DocumentModel.id == document_id, *DOCUMENT_NOT_DELETED)
+        .with_for_update()
+    ).one_or_none()
+
+
+def _has_embedding(chunk_id: ColumnElement[UUID]) -> Exists:
+    """청크를 source_id로 갖는 DOCUMENT_CHUNK 임베딩이 있는지 보는 조건."""
+    return (
+        select(EmbeddingModel.id)
+        .where(
+            EmbeddingModel.source_type == SOURCE_TYPE_DOCUMENT_CHUNK,
+            EmbeddingModel.source_id == chunk_id,
+        )
+        .exists()
+    )
+
+
+def _embedding_row(
+    chunk_id: UUID,
+    document: Row[tuple[UUID, UUID]],
+    vector: list[float],
+    model_name: str,
+    created_at: datetime,
+) -> dict[str, object]:
+    """embeddings INSERT 한 행의 값. 환자·방문 id는 문서 행에서 가져온다."""
+    return {
+        "id": uuid4(),
+        "source_type": SOURCE_TYPE_DOCUMENT_CHUNK,
+        "source_id": chunk_id,
+        "patient_id": document.patient_id,
+        "visit_id": document.visit_id,
+        "embedding": vector,
+        "model_name": model_name,
+        "dimensions": len(vector),
+        "created_at": created_at,
+    }
 
 
 def _chunk_row(

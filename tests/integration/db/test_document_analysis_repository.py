@@ -10,7 +10,6 @@ from sqlalchemy import Row, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.application.ports.document_analysis_repository import AnalysisTarget
-from app.application.ports.text_embedder import TextEmbeddings
 from app.application.use_cases.index_document_chunks import (
     ChunkIndexOutcome,
     index_document_chunks,
@@ -36,6 +35,7 @@ from app.infrastructure.db.repositories.document_analysis_repository import (
 from app.infrastructure.db.repositories.document_chunk_repository import (
     SqlAlchemyDocumentChunkRepository,
 )
+from tests.integration.db.conftest import RecordingEmbedder
 
 STARTED_AT = datetime(2026, 10, 1, 9, 0, tzinfo=UTC)
 COMPLETED_AT = datetime(2026, 10, 1, 9, 5, tzinfo=UTC)
@@ -447,20 +447,6 @@ def test_mark_started_clears_previous_failure(
     assert analysis.retryable is False
 
 
-class RecordingEmbedder:
-    """받은 텍스트를 기록하고 입력마다 768차원 합성 벡터를 돌려주는 가짜 임베더."""
-
-    def __init__(self) -> None:
-        self.texts: list[str] = []
-
-    def embed(self, texts: Sequence[str]) -> TextEmbeddings:
-        """텍스트를 기록하고 합성 벡터를 돌려준다."""
-        self.texts.extend(texts)
-        return TextEmbeddings(
-            vectors=[[1.0] + [0.0] * 767 for _ in texts], model_name="fake", dimensions=768
-        )
-
-
 def start_newer_analysis(
     db_session: Session, repository: SqlAlchemyDocumentAnalysisRepository, older: AnalysisTarget
 ) -> AnalysisTarget:
@@ -483,6 +469,7 @@ def test_late_older_result_does_not_overwrite_newer_page_text(
     session_factory: sessionmaker[Session],
     repository: SqlAlchemyDocumentAnalysisRepository,
     target: AnalysisTarget,
+    embedder: RecordingEmbedder,
 ) -> None:
     """늦게 끝난 이전 분석은 공유 원문·문서 상태를 덮어쓰지 않아 최신 청크에 최신 원문이 남는다."""
     repository.mark_started(target, STARTED_AT)
@@ -500,7 +487,6 @@ def test_late_older_result_does_not_overwrite_newer_page_text(
     saved = repository.save_result(
         target, DocumentStatus.READY, older_pages, "old-model", COMPLETED_AT
     )
-    embedder = RecordingEmbedder()
     result = index_document_chunks(
         target.document_id,
         chunk_repository=SqlAlchemyDocumentChunkRepository(session_factory),
@@ -514,7 +500,7 @@ def test_late_older_result_does_not_overwrite_newer_page_text(
     assert (result.outcome, result.analysis_id) == (ChunkIndexOutcome.INDEXED, newer.analysis_id)
     assert not any("A " in content for content in contents)
     assert any("B 원문" in content for content in contents)
-    assert not any("A " in sent for sent in embedder.texts)
+    assert not any("A " in sent for call in embedder.calls for sent in call)
     assert fetch_pages(db_session, target.document_id) == [
         (1, PageOcrStatus.SUCCEEDED, "B 원문"),
         (2, PageOcrStatus.FAILED, None),

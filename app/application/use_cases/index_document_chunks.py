@@ -33,7 +33,7 @@ class ChunkIndexSkipReason(StrEnum):
 
     NOT_FOUND = "NOT_FOUND"  # 문서가 없거나 삭제됐거나 분석 행이 없다.
     ANALYSIS_NOT_SUCCEEDED = "ANALYSIS_NOT_SUCCEEDED"
-    ALREADY_INDEXED = "ALREADY_INDEXED"  # 최신 분석에 청크가 이미 있다.
+    ALREADY_INDEXED = "ALREADY_INDEXED"  # 최신 분석의 모든 청크에 임베딩이 있다.
     SUPERSEDED = "SUPERSEDED"  # 교체 직전에 문서가 삭제됐거나 더 새 분석이 생겼다.
 
 
@@ -54,7 +54,12 @@ class ChunkIndexResult:
 def index_document_chunks(
     document_id: UUID, *, chunk_repository: DocumentChunkRepository, embedder: TextEmbedder
 ) -> ChunkIndexResult:
-    """삭제되지 않은 문서의 최신 분석이 SUCCEEDED이고 아직 색인 전일 때만 다시 색인한다."""
+    """삭제되지 않은 문서의 최신 분석이 SUCCEEDED이고 색인이 덜 됐을 때만 다시 색인한다.
+
+    최신 분석에 청크가 없으면 페이지 원문으로 전체 색인한다. 결과의 chunk_count는 만든 청크 수다.
+    청크는 있는데 임베딩이 없는 청크가 있으면 그 청크 본문만 임베딩해 채운다. 이때 chunk_count는
+    채운 청크 수다. 모든 청크에 임베딩이 있으면 ALREADY_INDEXED로 건너뛴다.
+    """
     try:
         target = chunk_repository.find_index_target(document_id)
     except Exception as error:
@@ -65,13 +70,51 @@ def index_document_chunks(
     if target.status != AnalysisStatus.SUCCEEDED:
         reason = ChunkIndexSkipReason.ANALYSIS_NOT_SUCCEEDED
         return _skipped(document_id, target.analysis_id, reason)
-    if target.has_chunks:
-        # 같은 분석을 다시 교체하면 유일 키 위반이므로, 임베딩 비용을 쓰기 전에 거른다.
+    if target.chunk_count == 0:
         # ponytail: 동시 재색인 둘이 함께 통과하면 늦은 쪽이 유일 키 위반으로 FAILED가 된다(롤백되어
         # 데이터는 안전). 막으려면 replace_chunks 잠금 안에서 이 분석의 청크 존재를 확인한다.
-        return _skipped(document_id, target.analysis_id, ChunkIndexSkipReason.ALREADY_INDEXED)
-    return index_analysis_chunks(
-        document_id, target.analysis_id, chunk_repository=chunk_repository, embedder=embedder
+        return index_analysis_chunks(
+            document_id, target.analysis_id, chunk_repository=chunk_repository, embedder=embedder
+        )
+    if target.missing_embedding_count > 0:
+        # 같은 분석의 청크를 다시 만들면 유일 키·인용 FK에 걸리므로, 빠진 임베딩만 채운다.
+        return _fill_missing_embeddings(
+            document_id, target.analysis_id, chunk_repository=chunk_repository, embedder=embedder
+        )
+    return _skipped(document_id, target.analysis_id, ChunkIndexSkipReason.ALREADY_INDEXED)
+
+
+def _fill_missing_embeddings(
+    document_id: UUID,
+    analysis_id: UUID,
+    *,
+    chunk_repository: DocumentChunkRepository,
+    embedder: TextEmbedder,
+) -> ChunkIndexResult:
+    """임베딩이 없는 청크의 본문만 임베딩해 채운다. 예외는 결과로 돌려준다."""
+    try:
+        chunks = chunk_repository.find_chunks_without_embedding(analysis_id)
+        if not chunks:
+            return _skipped(document_id, analysis_id, ChunkIndexSkipReason.ALREADY_INDEXED)
+        # 임베딩 호출은 오래 걸리므로 DB 트랜잭션 밖에서 끝낸다.
+        embeddings = embedder.embed([chunk.content for chunk in chunks])
+        added = chunk_repository.add_missing_embeddings(
+            document_id, analysis_id, chunks, embeddings, datetime.now(UTC)
+        )
+    except Exception as error:
+        _log_failure(document_id, analysis_id, error)
+        code = error.code.value if isinstance(error, TextEmbeddingError) else UNEXPECTED_ERROR_CODE
+        return ChunkIndexResult(ChunkIndexOutcome.FAILED, analysis_id=analysis_id, error_code=code)
+    if not added:
+        return _skipped(document_id, analysis_id, ChunkIndexSkipReason.SUPERSEDED)
+    logger.info(
+        "빠진 임베딩 채움: document_id=%s, analysis_id=%s, chunks=%d",
+        document_id,
+        analysis_id,
+        len(chunks),
+    )
+    return ChunkIndexResult(
+        ChunkIndexOutcome.INDEXED, analysis_id=analysis_id, chunk_count=len(chunks)
     )
 
 

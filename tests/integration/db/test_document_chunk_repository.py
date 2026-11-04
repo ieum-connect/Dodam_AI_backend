@@ -9,7 +9,14 @@ from sqlalchemy import Row, select, text
 from sqlalchemy.exc import IntegrityError, StatementError
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.application.ports.document_chunk_repository import ChunkText, IndexTarget
 from app.application.ports.text_embedder import TextEmbeddings
+from app.application.use_cases.index_document_chunks import (
+    ChunkIndexOutcome,
+    ChunkIndexResult,
+    ChunkIndexSkipReason,
+    index_document_chunks,
+)
 from app.domain.document.document_analysis import AnalysisStatus
 from app.domain.document.document_chunk import DocumentChunk, PageText
 from app.domain.document.document_page import PageOcrStatus
@@ -17,6 +24,7 @@ from app.infrastructure.db.models.embedding import EmbeddingModel
 from app.infrastructure.db.repositories.document_chunk_repository import (
     SqlAlchemyDocumentChunkRepository,
 )
+from tests.integration.db.conftest import RecordingEmbedder
 
 CREATED_AT = datetime(2026, 10, 1, 9, 0, tzinfo=UTC)
 MODEL_NAME = "text-embedding-3-small"
@@ -177,6 +185,15 @@ def insert_old_chunk(
     source_type: str = "DOCUMENT_CHUNK",
 ) -> UUID:
     """청크 하나와 그 청크를 가리키는 임베딩을 raw SQL로 넣고 청크 id를 돌려준다."""
+    chunk_id = insert_chunk_only(session, analysis_id, page_id, chunk_index, "이전 합성 청크")
+    insert_embedding(session, analysis_id, chunk_id, source_type)
+    return chunk_id
+
+
+def insert_chunk_only(
+    session: Session, analysis_id: UUID, page_id: UUID, chunk_index: int, content: str
+) -> UUID:
+    """임베딩 없이 청크 하나만 raw SQL로 넣고 청크 id를 돌려준다."""
     chunk_id = uuid4()
     session.execute(
         text(
@@ -188,10 +205,9 @@ def insert_old_chunk(
             "analysis_id": analysis_id,
             "page_id": page_id,
             "chunk_index": chunk_index,
-            "content": "이전 합성 청크",
+            "content": content,
         },
     )
-    insert_embedding(session, analysis_id, chunk_id, source_type)
     return chunk_id
 
 
@@ -512,31 +528,28 @@ def make_analyzed_document(
     return document_id, analysis_id, page_id
 
 
-def test_find_index_target_reads_latest_analysis_and_chunk_presence(
+def test_find_index_target_reads_latest_analysis_and_chunk_counts(
     db_session: Session,
     session_factory: sessionmaker[Session],
     document_id: UUID,
     analysis_id: UUID,
     page_id: UUID,
 ) -> None:
-    """최신 분석의 id와 상태를 읽고, 그 분석에 청크가 있는지 알려 준다."""
+    """최신 분석의 id·상태와 그 분석의 청크 수, DOCUMENT_CHUNK 임베딩이 없는 청크 수를 읽는다."""
     old_analysis_id = insert_analysis(db_session, document_id, days=-1)
     insert_old_chunk(db_session, old_analysis_id, page_id, 0)
+    insert_chunk_only(db_session, old_analysis_id, page_id, 1, "이전 합성 청크")
     repository = SqlAlchemyDocumentChunkRepository(session_factory)
 
     target = repository.find_index_target(document_id)
-    assert target is not None
-    assert (target.analysis_id, target.status, target.has_chunks) == (
-        analysis_id,
-        AnalysisStatus.PENDING,
-        False,
-    )
+    assert target == IndexTarget(analysis_id, AnalysisStatus.PENDING, 0, 0)
 
     set_analysis_status(db_session, analysis_id, "SUCCEEDED")
     insert_old_chunk(db_session, analysis_id, page_id, 0)
+    insert_old_chunk(db_session, analysis_id, page_id, 1, source_type="HEALTH_RECORD")
+    insert_chunk_only(db_session, analysis_id, page_id, 2, "합성 청크 2")
     target = repository.find_index_target(document_id)
-    assert target is not None
-    assert (target.status, target.has_chunks) == (AnalysisStatus.SUCCEEDED, True)
+    assert target == IndexTarget(analysis_id, AnalysisStatus.SUCCEEDED, 3, 2)
 
 
 def test_find_index_target_is_none_without_live_document_or_analysis(
@@ -560,9 +573,14 @@ def test_find_index_target_is_none_without_live_document_or_analysis(
 
 
 def test_find_unindexed_document_ids_picks_only_live_succeeded_without_embeddings(
-    db_session: Session, session_factory: sessionmaker[Session], document_id: UUID
+    db_session: Session,
+    session_factory: sessionmaker[Session],
+    document_id: UUID,
+    embedder: RecordingEmbedder,
 ) -> None:
-    """임베딩 있는 문서, 삭제된 문서, 최신 분석이 SUCCEEDED가 아닌 문서, 원문 없는 문서는 뺀다."""
+    """모든 청크에 임베딩 있는 문서, 삭제된 문서, 최신 분석이 SUCCEEDED가 아닌 문서,
+    원문 없는 문서는 뺀다. 청크에 HEALTH_RECORD 임베딩만 있는 문서는 목록에 뜨고,
+    재색인하면 채워져 빠진다."""
     unindexed, _, _ = make_analyzed_document(db_session, document_id)
 
     only_old_indexed, _, old_page = make_analyzed_document(db_session, document_id)
@@ -604,8 +622,154 @@ def test_find_unindexed_document_ids_picks_only_live_succeeded_without_embedding
         latest_running,
         no_text,
     }
-    found = SqlAlchemyDocumentChunkRepository(session_factory).find_unindexed_document_ids()
+    repository = SqlAlchemyDocumentChunkRepository(session_factory)
+    found = repository.find_unindexed_document_ids()
 
     # 공유 DB라 다른 문서가 섞일 수 있어 이 테스트가 만든 문서만 비교한다.
     assert set(found) & mine == {unindexed, only_old_indexed, health_only}
     assert found == sorted(found)
+
+    # 예전 기준은 청크가 있다는 이유로 ALREADY_INDEXED로 건너뛰어 영구히 복구되지 않았다.
+    result = index_document_chunks(health_only, chunk_repository=repository, embedder=embedder)
+    assert (result.outcome, result.chunk_count) == (ChunkIndexOutcome.INDEXED, 1)
+    assert health_only not in repository.find_unindexed_document_ids()
+
+
+@pytest.fixture
+def partly_embedded(
+    db_session: Session, document_id: UUID, analysis_id: UUID, page_id: UUID
+) -> tuple[UUID, list[UUID]]:
+    """최신 SUCCEEDED 분석에 청크 3개를 두고 첫 청크에만 임베딩을 넣는다. (분석 id, 청크 id들)."""
+    set_analysis_status(db_session, analysis_id, "SUCCEEDED")
+    first = insert_old_chunk(db_session, analysis_id, page_id, 0)
+    rest = [
+        insert_chunk_only(db_session, analysis_id, page_id, index, f"빠진 합성 청크 {index}")
+        for index in (1, 2)
+    ]
+    return analysis_id, [first, *rest]
+
+
+def test_partly_embedded_document_is_listed_and_only_missing_chunks_are_filled(
+    db_session: Session,
+    session_factory: sessionmaker[Session],
+    document_id: UUID,
+    partly_embedded: tuple[UUID, list[UUID]],
+    embedder: RecordingEmbedder,
+) -> None:
+    """일부 청크만 임베딩이 있으면 목록에 뜬다. 재색인은 빠진 청크만 임베딩하고 청크는 그대로 둔다.
+    다시 실행하면 ALREADY_INDEXED이고 목록에서 빠진다."""
+    analysis_id, chunk_ids = partly_embedded
+    repository = SqlAlchemyDocumentChunkRepository(session_factory)
+    assert document_id in repository.find_unindexed_document_ids()
+
+    result = index_document_chunks(document_id, chunk_repository=repository, embedder=embedder)
+
+    assert result == ChunkIndexResult(
+        ChunkIndexOutcome.INDEXED, analysis_id=analysis_id, chunk_count=2
+    )
+    assert embedder.calls == [["빠진 합성 청크 1", "빠진 합성 청크 2"]]
+    assert chunk_ids_of(db_session, analysis_id) == chunk_ids
+    assert embedded_source_ids(db_session, document_id) == set(chunk_ids)
+    assert document_id not in repository.find_unindexed_document_ids()
+
+    again = index_document_chunks(document_id, chunk_repository=repository, embedder=embedder)
+
+    assert again.skip_reason == ChunkIndexSkipReason.ALREADY_INDEXED
+    assert len(embedder.calls) == 1
+
+
+def test_fill_works_with_cited_chunks(
+    db_session: Session,
+    session_factory: sessionmaker[Session],
+    document_id: UUID,
+    page_id: UUID,
+    partly_embedded: tuple[UUID, list[UUID]],
+    embedder: RecordingEmbedder,
+) -> None:
+    """빠진 청크나 이전 분석 청크가 인용되어 있어도 채운다. 어떤 청크도 지우지 않는다."""
+    analysis_id, chunk_ids = partly_embedded
+    old_analysis_id = insert_analysis(db_session, document_id, days=-1)
+    old_id = insert_old_chunk(db_session, old_analysis_id, page_id, 0)
+    cite_chunk(db_session, document_id, old_id)
+    # ai_explanations는 문서마다 version 1이 하나뿐이라 두 번째 인용은 다른 합성 문서의 설명에 단다.
+    cite_chunk(db_session, insert_document(db_session, document_id), chunk_ids[1])
+    repository = SqlAlchemyDocumentChunkRepository(session_factory)
+
+    result = index_document_chunks(document_id, chunk_repository=repository, embedder=embedder)
+
+    assert (result.outcome, result.chunk_count) == (ChunkIndexOutcome.INDEXED, 2)
+    assert chunk_ids_of(db_session, analysis_id) == chunk_ids
+    assert chunk_ids_of(db_session, old_analysis_id) == [old_id]
+    assert embedded_source_ids(db_session, document_id) == {*chunk_ids, old_id}
+
+
+@pytest.mark.parametrize(
+    "change_sql",
+    [
+        "UPDATE documents SET deleted_at = CURRENT_TIMESTAMP WHERE id = :id",
+        "UPDATE documents SET status = 'DELETED' WHERE id = :id",
+        "INSERT INTO document_analyses (id, document_id, parser_version, created_at)"
+        " VALUES (gen_random_uuid(), :id, 'v1', CURRENT_TIMESTAMP + INTERVAL '1 day')",
+    ],
+    ids=["deleted_at", "status_deleted", "newer_analysis"],
+)
+def test_add_missing_embeddings_writes_nothing_for_deleted_or_superseded(
+    db_session: Session,
+    session_factory: sessionmaker[Session],
+    document_id: UUID,
+    partly_embedded: tuple[UUID, list[UUID]],
+    embedder: RecordingEmbedder,
+    change_sql: str,
+) -> None:
+    """문서가 삭제됐거나 더 새 분석이 생겼으면 False를 반환하고 임베딩을 넣지 않는다."""
+    analysis_id, chunk_ids = partly_embedded
+    repository = SqlAlchemyDocumentChunkRepository(session_factory)
+    missing = repository.find_chunks_without_embedding(analysis_id)
+    db_session.execute(text(change_sql), {"id": document_id})
+
+    added = repository.add_missing_embeddings(
+        document_id,
+        analysis_id,
+        missing,
+        embedder.embed([chunk.content for chunk in missing]),
+        CREATED_AT,
+    )
+
+    assert added is False
+    assert embedded_source_ids(db_session, document_id) == {chunk_ids[0]}
+
+
+def test_add_missing_embeddings_skips_already_filled_and_checks_vector_count(
+    db_session: Session,
+    session_factory: sessionmaker[Session],
+    document_id: UUID,
+    partly_embedded: tuple[UUID, list[UUID]],
+) -> None:
+    """이미 임베딩이 있는 청크는 다시 넣지 않는다.
+    벡터 수가 다르면 ValueError이고 아무것도 쓰지 않는다."""
+    analysis_id, chunk_ids = partly_embedded
+    repository = SqlAlchemyDocumentChunkRepository(session_factory)
+    missing = repository.find_chunks_without_embedding(analysis_id)
+    assert [chunk.chunk_id for chunk in missing] == chunk_ids[1:]
+
+    with pytest.raises(ValueError):
+        repository.add_missing_embeddings(
+            document_id, analysis_id, missing, make_embeddings(make_vector(1.0)), CREATED_AT
+        )
+    assert embedded_source_ids(db_session, document_id) == {chunk_ids[0]}
+
+    first = ChunkText(chunk_ids[0], "이전 합성 청크")
+    added = repository.add_missing_embeddings(
+        document_id,
+        analysis_id,
+        [first, *missing],
+        make_embeddings(make_vector(1.0), make_vector(2.0), make_vector(3.0)),
+        CREATED_AT,
+    )
+
+    assert added is True
+    counts = db_session.execute(
+        text("SELECT source_id, count(*) FROM embeddings WHERE source_id = ANY(:ids) GROUP BY 1"),
+        {"ids": chunk_ids},
+    ).all()
+    assert dict(counts) == dict.fromkeys(chunk_ids, 1)

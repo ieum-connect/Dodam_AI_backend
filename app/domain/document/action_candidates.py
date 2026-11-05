@@ -27,14 +27,30 @@ def _explicit_datetime(value: str | None, source: str) -> datetime | None:
         return None
     try:
         parsed = datetime.fromisoformat(value)
-        date = re.search(r"(\d{4})[년./-]\s*(\d{1,2})[월./-]\s*(\d{1,2})", source)
-        time = re.search(r"(?:(오전|오후)\s*)?(\d{1,2})(?::|시)\s*(\d{1,2})?", source)
-        if date is None or time is None:
+        dates = list(
+            re.finditer(r"(?<!\d)(\d{4})[년./-]\s*(\d{1,2})[월./-]\s*(\d{1,2})(?!\d)", source)
+        )
+        # An attached ISO offset is a timezone. A dash between prose times is ambiguous.
+        clock_source = re.sub(r"(T\d{2}:\d{2}(?::\d{2})?)[+-]\d{2}:\d{2}(?!\d)", r"\1", source)
+        times = list(
+            re.finditer(
+                r"(?<!\d)(?:(오전|오후)\s*)?(\d{1,2})(?::(\d{2})(?!\d)|시(?!간)(?:\s*(\d{1,2})분)?)",
+                clock_source,
+            )
+        )
+        if len(dates) != 1 or len(times) != 1:
             return None
-        hour = int(time[2])
-        if time[1] in {"오전", "오후"}:
-            hour = hour % 12 + (12 if time[1] == "오후" else 0)
-        source_values = (*map(int, date.groups()), hour, int(time[3] or 0))
+        meridiem, source_hour, colon_minute, korean_minute = times[0].groups()
+        hour = int(source_hour)
+        if meridiem:
+            if not 1 <= hour <= 12:
+                return None
+            hour = hour % 12 + (12 if meridiem == "오후" else 0)
+        source_values = (
+            *map(int, dates[0].groups()),
+            hour,
+            int(colon_minute or korean_minute or 0),
+        )
         if source_values != (parsed.year, parsed.month, parsed.day, parsed.hour, parsed.minute):
             return None
         source_has_zone = re.search(r"(?:Z\b|UTC\b|[+-]\d{2}:\d{2})", source)

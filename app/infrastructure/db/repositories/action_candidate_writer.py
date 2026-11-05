@@ -35,7 +35,14 @@ def save_candidates(
             INSERT INTO action_items(id, visit_id, document_id, type, title, description,
                                      due_at, approval_status)
             VALUES (:id,:visit_id,:document_id,:type,:title,:description,:due_at,'PENDING')
-            ON CONFLICT (id) DO NOTHING
+            ON CONFLICT (id) DO UPDATE SET
+                approval_status='PENDING',
+                cancel_reason=NULL,
+                title=EXCLUDED.title,
+                description=EXCLUDED.description,
+                due_at=EXCLUDED.due_at
+            WHERE action_items.approval_status='CANCELED'
+              AND action_items.cancel_reason='SOURCE_REANALYZED'
         """),
             {
                 "id": candidate.id,

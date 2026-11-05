@@ -3,6 +3,8 @@
 from datetime import timedelta
 from uuid import uuid4
 
+import pytest
+
 from app.domain.document.action_candidates import build_candidates
 from app.domain.document.page_extraction import ExtractedItem, PageExtraction
 
@@ -66,3 +68,16 @@ def test_model_added_timezone_does_not_shift_a_korean_appointment():
     candidate = build_candidates(uuid4(), {1: extraction(value="2026-12-03T10:00Z")})[0]
     assert candidate.due_at.hour == 10
     assert candidate.due_at.utcoffset() == timedelta(hours=9)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "2026.12.3 오전 10시 검사, 2026.12.17 재진",
+        "2026년 12월 3일 10시간 금식 후 검사",
+        "2026년 12월 3일 오전 10시 검사 또는 오후 2시 검사",
+        "2026년 12월 3일 10:00-11:00 검사",
+    ],
+)
+def test_ambiguous_dates_or_times_and_durations_do_not_set_due_at(source):
+    assert build_candidates(uuid4(), {1: extraction(source=source)})[0].due_at is None

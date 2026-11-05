@@ -43,3 +43,21 @@ def test_successful_reanalysis_cancels_stale_pending_candidates(db_session, docu
         ).scalar_one()
         == "CANCELED"
     )
+
+
+def test_reappearing_candidate_becomes_pending_with_the_same_id(db_session, document_id):
+    page = extraction()
+    find_candidate = text(
+        "SELECT id, approval_status, cancel_reason FROM action_items WHERE document_id=:id"
+    )
+    params = {"id": document_id}
+    save_candidates(db_session, document_id, {1: page})
+    original = db_session.execute(find_candidate, params).one()
+    save_candidates(db_session, document_id, {})
+    assert db_session.execute(find_candidate, params).one() == (
+        original.id,
+        "CANCELED",
+        "SOURCE_REANALYZED",
+    )
+    save_candidates(db_session, document_id, {2: page})
+    assert db_session.execute(find_candidate, params).one() == (original.id, "PENDING", None)

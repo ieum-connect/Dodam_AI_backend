@@ -1,0 +1,89 @@
+"""Turn grounded VLM extraction into unapproved tasks, never into schedules."""
+
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import datetime
+from uuid import UUID, uuid5
+from zoneinfo import ZoneInfo
+
+from app.domain.document.page_extraction import ExtractedItemType, PageExtraction
+
+
+@dataclass(frozen=True)
+class ActionCandidate:
+    id: UUID
+    type: str
+    title: str
+    description: str
+    due_at: datetime | None
+
+
+def _explicit_datetime(value: str | None, source: str) -> datetime | None:
+    # Date-only and relative dates deliberately require guardian input.
+    if not value or not re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:\d{2})?", value
+    ):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+        date = re.search(r"(\d{4})[년./-]\s*(\d{1,2})[월./-]\s*(\d{1,2})", source)
+        time = re.search(r"(?:(오전|오후)\s*)?(\d{1,2})(?::|시)\s*(\d{1,2})?", source)
+        if date is None or time is None:
+            return None
+        hour = int(time[2])
+        if time[1] in {"오전", "오후"}:
+            hour = hour % 12 + (12 if time[1] == "오후" else 0)
+        source_values = (*map(int, date.groups()), hour, int(time[3] or 0))
+        if source_values != (parsed.year, parsed.month, parsed.day, parsed.hour, parsed.minute):
+            return None
+        source_has_zone = re.search(r"(?:Z\b|UTC\b|[+-]\d{2}:\d{2})", source)
+        if source_has_zone:
+            return parsed if parsed.tzinfo else None
+        # A model-added Z/offset is not evidence of a timezone in a Korean document.
+        return parsed.replace(tzinfo=ZoneInfo("Asia/Seoul"))
+    except ValueError:
+        return None
+
+
+def build_candidates(
+    document_id: UUID, pages: Mapping[int, PageExtraction]
+) -> list[ActionCandidate]:
+    """Only document-grounded schedules, medication and cautions become candidates."""
+    candidates: dict[UUID, ActionCandidate] = {}
+    for page_no, extraction in sorted(pages.items()):
+        for item in extraction.items:
+            if item.item_type not in {
+                ExtractedItemType.SCHEDULE,
+                ExtractedItemType.MEDICATION,
+                ExtractedItemType.CAUTION,
+            }:
+                continue
+            # Reject hallucinated evidence. Whitespace may differ between OCR and items.
+            source = "".join(item.source_text.split())
+            if not source or source not in "".join(extraction.raw_text.split()):
+                continue
+            kind = item.item_type.value
+            if kind == "SCHEDULE":
+                kind = (
+                    "TEST"
+                    if re.search(r"검사|검진|test|exam", item.source_text, re.I)
+                    else "REVISIT"
+                )
+            title = (item.normalized_name or item.source_text).strip()[:200]
+            fingerprint = f"{item.item_type}:{source}:{item.normalized_value or ''}"
+            candidate_id = uuid5(document_id, fingerprint)
+            candidates.setdefault(
+                candidate_id,
+                ActionCandidate(
+                    id=candidate_id,
+                    type=kind,
+                    title=title,
+                    description=f"원문 {page_no}쪽: {item.source_text}",
+                    # Medication normalized_value is dosage, not an appointment date.
+                    due_at=_explicit_datetime(item.normalized_value, item.source_text)
+                    if item.item_type == ExtractedItemType.SCHEDULE
+                    else None,
+                ),
+            )
+    return list(candidates.values())

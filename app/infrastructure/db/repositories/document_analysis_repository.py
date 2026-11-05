@@ -21,6 +21,7 @@ from app.infrastructure.db.models.document import DOCUMENT_NOT_DELETED, Document
 from app.infrastructure.db.models.document_analysis import DocumentAnalysisModel
 from app.infrastructure.db.models.document_page import DocumentPageModel
 from app.infrastructure.db.models.extracted_item import ExtractedItemModel
+from app.infrastructure.db.repositories.action_candidate_writer import save_candidates
 from app.infrastructure.db.repositories.document_page_repository import (
     SqlAlchemyDocumentPageRepository,
 )
@@ -60,7 +61,7 @@ class SqlAlchemyDocumentAnalysisRepository:
     def mark_started(self, target: AnalysisTarget, started_at: datetime) -> bool:
         """문서를 PROCESSING, 분석을 RUNNING으로 바꾸고 이전 실행의 결과 컬럼을 비운다.
 
-        분석이 이미 SUCCEEDED면 아무것도 바꾸지 않고 False를 반환한다.
+        분석이 이미 RUNNING 또는 SUCCEEDED면 아무것도 바꾸지 않고 False를 반환한다.
         """
         with self._session_factory.begin() as session:
             status = session.execute(
@@ -69,7 +70,7 @@ class SqlAlchemyDocumentAnalysisRepository:
                 .with_for_update()
             ).scalar_one()
             # 끝난 분석은 다시 돌리지 않는다. 재분석은 새 분석 행으로 한다(FC-08-03-02).
-            if status == AnalysisStatus.SUCCEEDED:
+            if status in {AnalysisStatus.SUCCEEDED, AnalysisStatus.RUNNING}:
                 return False
             if not _update_document(session, target, DocumentStatus.PROCESSING, started_at):
                 return False
@@ -163,6 +164,7 @@ class SqlAlchemyDocumentAnalysisRepository:
                 completed_at=completed_at,
                 model_version=model_version,
             )
+            save_candidates(session, target.document_id, extractions_by_page_no)
             return True
 
     def mark_failed(

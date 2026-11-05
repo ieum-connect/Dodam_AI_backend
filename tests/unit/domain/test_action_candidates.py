@@ -55,6 +55,27 @@ def test_non_action_and_ungrounded_evidence_are_ignored():
     assert not build_candidates(uuid4(), {1: page})
 
 
+def test_document_notices_do_not_hide_a_clinical_caution():
+    sources = [
+        "실제 환자 기록이나 의료 지시가 아닙니다.",
+        "AI 모델 응답을 대체한 연동 테스트에만 사용합니다.",
+        "검사 전 8시간 동안 금식하세요.",
+    ]
+    page = extraction("CAUTION", None, sources[0]).model_copy(
+        update={
+            "raw_text": "\n".join(sources),
+            "items": [
+                extraction("CAUTION", None, source).items[0].model_copy(
+                    update={"normalized_name": None}
+                )
+                for source in sources
+            ],
+        }
+    )
+    rows = build_candidates(uuid4(), {1: page})
+    assert [(row.type, row.title) for row in rows] == [("CAUTION", sources[2])]
+
+
 def test_normalized_date_cannot_invent_missing_year_or_time():
     for source in [
         "12월 3일 오전 10시 검사",

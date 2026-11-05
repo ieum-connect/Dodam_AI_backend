@@ -9,6 +9,13 @@ from zoneinfo import ZoneInfo
 
 from app.domain.document.page_extraction import ExtractedItemType, PageExtraction
 
+# Narrow fallback for document-only notices that may still be labeled as cautions.
+_DOCUMENT_NOTICE = re.compile(
+    r"(?:실제(?:환자기록|진료기록)(?:(?:이나|또는)의료지시)?(?:이|가)?아닙니다"
+    r"|(?:AI모델응답을대체한)?(?:연동|통합)?테스트(?:용으로|에)만사용합니다)[.!。]?",
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True)
 class ActionCandidate:
@@ -78,6 +85,8 @@ def build_candidates(
             # Reject hallucinated evidence. Whitespace may differ between OCR and items.
             source = "".join(item.source_text.split())
             if not source or source not in "".join(extraction.raw_text.split()):
+                continue
+            if item.item_type == ExtractedItemType.CAUTION and _DOCUMENT_NOTICE.fullmatch(source):
                 continue
             kind = item.item_type.value
             if kind == "SCHEDULE":

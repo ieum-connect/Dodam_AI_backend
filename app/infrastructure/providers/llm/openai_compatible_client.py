@@ -30,22 +30,25 @@ class OpenAiCompatibleLlmClient:
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        self._client = OpenAI(
-            api_key=settings.llm_api_key.get_secret_value() if settings.llm_api_key else "",
-            base_url=settings.llm_base_url,
-            timeout=settings.llm_timeout_seconds,
-            max_retries=settings.llm_max_retries,
+        self._client = (
+            OpenAI(
+                api_key=settings.llm_api_key.get_secret_value() if settings.llm_api_key else "",
+                base_url=settings.llm_base_url,
+                timeout=settings.llm_timeout_seconds,
+                max_retries=settings.llm_max_retries,
+            )
+            if settings.llm_api_key and settings.llm_api_key.get_secret_value()
+            else None
         )
 
     def close(self) -> None:
         """앱 종료 시 연결 풀을 닫는다."""
-        self._client.close()
+        if self._client is not None:
+            self._client.close()
 
     def generate_grounded_answer(self, system_prompt: str, user_prompt: str) -> GeneratedAnswer:
-        if self._settings.llm_api_key is None:
-            raise AiResultGenerationError(
-                AiResultErrorCode.AI_API_KEY_MISSING, retryable=False
-            )
+        if self._client is None:
+            raise AiResultGenerationError(AiResultErrorCode.AI_API_KEY_MISSING, retryable=False)
         try:
             request_kwargs = {
                 "model": self._settings.llm_model,
@@ -89,9 +92,7 @@ class OpenAiCompatibleLlmClient:
             ) from None
         content = response.choices[0].message.content
         if not content:
-            raise AiResultGenerationError(
-                AiResultErrorCode.AI_RESPONSE_INVALID, retryable=True
-            )
+            raise AiResultGenerationError(AiResultErrorCode.AI_RESPONSE_INVALID, retryable=True)
         try:
             normalized = content.strip()
             if normalized.startswith("```json") and normalized.endswith("```"):

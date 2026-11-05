@@ -7,6 +7,7 @@ from sqlalchemy import String, Uuid
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlalchemy.orm import Mapped, mapped_column
 
+from app.domain.document.document_analysis import DocumentStatus
 from app.infrastructure.db.models.base import Base
 
 
@@ -16,9 +17,19 @@ class DocumentModel(Base):
     __tablename__ = "documents"
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    # patients, visits는 매핑하지 않아 FK를 적지 않는다.
+    patient_id: Mapped[UUID] = mapped_column(Uuid)
+    visit_id: Mapped[UUID] = mapped_column(Uuid)
     storage_key: Mapped[str] = mapped_column(String(500))
     mime_type: Mapped[str] = mapped_column(String(100))
     status: Mapped[str] = mapped_column(String(20))
     status_changed_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True, precision=6))
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True, precision=6))
     deleted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True, precision=6))
+
+
+# 삭제되지 않은 문서 조건. 분석 대상 조회와 재색인 대상 조회가 같은 기준을 쓴다.
+DOCUMENT_NOT_DELETED = (
+    DocumentModel.status != DocumentStatus.DELETED,
+    DocumentModel.deleted_at.is_(None),
+)

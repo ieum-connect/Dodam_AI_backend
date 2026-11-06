@@ -102,3 +102,14 @@ class OpenAiCompatibleLlmClient:
             raise AiResultGenerationError(
                 AiResultErrorCode.AI_RESPONSE_INVALID, retryable=True
             ) from None
+
+    def generate_text(self, system_prompt: str, user_prompt: str) -> str:
+        """복지 설명처럼 짧은 일반 텍스트를 생성한다."""
+        if self._settings.llm_api_key is None:
+            raise AiResultGenerationError(AiResultErrorCode.AI_API_KEY_MISSING, retryable=False)
+        response = self._client.chat.completions.create(
+            model=self._settings.llm_model,
+            temperature=self._settings.llm_temperature,
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+        )
+        return (response.choices[0].message.content or "").strip()

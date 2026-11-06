@@ -3,6 +3,7 @@
 from fastapi import APIRouter, Depends, Request
 
 from app.core.config import Settings, get_settings
+from app.infrastructure.providers.llm.openai_compatible_client import OpenAiCompatibleLlmClient
 from app.infrastructure.welfare.spring_client import SpringWelfareClient
 from app.domain.welfare.policy_chunk import chunk_program
 from app.infrastructure.welfare.embedding_store import WelfareEmbeddingStore
@@ -54,8 +55,12 @@ async def search_programs(request: WelfareSearchRequest) -> dict[str, object]:
 
 
 @router.post("/explanations")
-def explain_recommendation(request: WelfareExplanationRequest):
-    return explain(request)
+def explain_recommendation(request: WelfareExplanationRequest, settings: Settings = Depends(get_settings)):
+    llm = OpenAiCompatibleLlmClient(settings)
+    try:
+        return explain(request, llm)
+    finally:
+        llm.close()
 
 
 @router.post("/recommendations/mode")

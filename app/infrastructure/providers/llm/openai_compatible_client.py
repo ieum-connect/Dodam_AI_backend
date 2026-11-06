@@ -53,7 +53,6 @@ class OpenAiCompatibleLlmClient:
         try:
             request_kwargs = {
                 "model": self._settings.llm_model,
-                "temperature": self._settings.llm_temperature,
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
@@ -70,6 +69,10 @@ class OpenAiCompatibleLlmClient:
             # Gemini OpenAI 호환 API는 OpenAI 전용 reasoning_effort를 받지 않는다.
             if self._settings.llm_provider != "gemini_openai_compatible":
                 request_kwargs["reasoning_effort"] = self._settings.llm_reasoning_effort
+                if self._settings.llm_reasoning_effort == "none":
+                    request_kwargs["temperature"] = self._settings.llm_temperature
+            else:
+                request_kwargs["temperature"] = self._settings.llm_temperature
             response = self._client.chat.completions.create(**request_kwargs)
         except APITimeoutError:
             raise AiResultGenerationError(AiResultErrorCode.AI_TIMEOUT, retryable=True) from None
@@ -108,9 +111,15 @@ class OpenAiCompatibleLlmClient:
         """복지 설명처럼 짧은 일반 텍스트를 생성한다."""
         if self._settings.llm_api_key is None and self._settings.openai_api_key is None:
             raise AiResultGenerationError(AiResultErrorCode.AI_API_KEY_MISSING, retryable=False)
-        response = self._client.chat.completions.create(
-            model=self._settings.llm_model,
-            temperature=self._settings.llm_temperature,
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
-        )
+        request_kwargs = {
+            "model": self._settings.llm_model,
+            "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+        }
+        if self._settings.llm_provider != "gemini_openai_compatible":
+            request_kwargs["reasoning_effort"] = self._settings.llm_reasoning_effort
+            if self._settings.llm_reasoning_effort == "none":
+                request_kwargs["temperature"] = self._settings.llm_temperature
+        else:
+            request_kwargs["temperature"] = self._settings.llm_temperature
+        response = self._client.chat.completions.create(**request_kwargs)
         return (response.choices[0].message.content or "").strip()

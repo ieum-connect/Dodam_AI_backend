@@ -2,7 +2,11 @@
 
 from pydantic import BaseModel, Field
 
-from app.domain.welfare.recommendation_context import WelfareProfile, WelfareRecommendation
+from app.domain.welfare.recommendation_context import (
+    WelfareChildContext,
+    WelfareProfile,
+    WelfareRecommendation,
+)
 
 
 class WelfareProgramInput(BaseModel):
@@ -46,6 +50,7 @@ class WelfareSearchResult(BaseModel):
 class WelfareExplanationRequest(BaseModel):
     program: WelfareProgramInput
     recommendation: WelfareRecommendation
+    child: WelfareChildContext | None = None
     evidence: list[str] = Field(default_factory=list, max_length=20)
 
 
@@ -54,4 +59,7 @@ class WelfareExplanationResponse(BaseModel):
     matched_reasons: list[str]
     additional_checks: list[str]
     source_evidence: list[str]
+    #: 설명이 인용해야 하는 일치율. 추천 엔진이 계산한 값을 그대로 돌려준다.
+    score: float = 0
+    status: str = ""
     ai_generated: bool = True

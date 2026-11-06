@@ -24,7 +24,7 @@ class SpringWelfareClient:
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 response = await client.get(
-                    f"{self._base_url}/api/welfare-programs",
+                    f"{self._base_url}/internal/welfare-programs",
                     params=params,
                     headers={"X-Internal-Token": self._token},
                 )
@@ -40,7 +40,7 @@ class SpringWelfareClient:
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:
                 response = await client.get(
-                    f"{self._base_url}/api/welfare-programs/{program_id}",
+                    f"{self._base_url}/internal/welfare-programs/{program_id}",
                     headers={"X-Internal-Token": self._token},
                 )
                 response.raise_for_status()

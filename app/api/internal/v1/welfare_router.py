@@ -1,5 +1,7 @@
 """복지 AI 내부 API의 기본 상태 엔드포인트."""
 
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, Request
 
 from app.core.config import Settings, get_settings
@@ -13,6 +15,7 @@ from app.application.welfare.search_policy import search
 from app.contracts.welfare import WelfareExplanationRequest, WelfareRecommendationRequest, WelfareSearchRequest
 from app.application.welfare.recommend_by_profile import recommendation_mode
 from app.application.welfare.explain_recommendation import explain
+from app.api.internal.v1.ai_result_document_router import require_internal_token
 
 embedding_store = WelfareEmbeddingStore()
 
@@ -30,21 +33,30 @@ def welfare_client(settings: Settings = Depends(get_settings)) -> SpringWelfareC
 
 
 @router.get("/programs")
-async def list_programs(client: SpringWelfareClient = Depends(welfare_client)) -> dict[str, object]:
+async def list_programs(
+    client: SpringWelfareClient = Depends(welfare_client),
+    _: Annotated[None, Depends(require_internal_token)] = None,
+) -> dict[str, object]:
     """Spring DB에 동기화된 실제 복지서비스만 반환한다."""
     programs = await client.list_programs()
     return {"items": programs, "count": len(programs), "source": "spring-welfare-catalog"}
 
 
 @router.post("/chunks")
-async def chunk_programs(client: SpringWelfareClient = Depends(welfare_client)) -> dict[str, object]:
+async def chunk_programs(
+    client: SpringWelfareClient = Depends(welfare_client),
+    _: Annotated[None, Depends(require_internal_token)] = None,
+) -> dict[str, object]:
     programs = await client.list_programs()
     chunks = [chunk for program in programs for chunk in chunk_program(program)]
     return {"items": [chunk.__dict__ for chunk in chunks], "count": len(chunks), "source": "spring-welfare-catalog"}
 
 
 @router.post("/embeddings/sync")
-async def sync_embeddings(client: SpringWelfareClient = Depends(welfare_client)) -> dict[str, object]:
+async def sync_embeddings(
+    client: SpringWelfareClient = Depends(welfare_client),
+    _: Annotated[None, Depends(require_internal_token)] = None,
+) -> dict[str, object]:
     programs = await client.list_programs()
     chunks = [chunk for program in programs for chunk in chunk_program(program)]
     try:
@@ -56,12 +68,19 @@ async def sync_embeddings(client: SpringWelfareClient = Depends(welfare_client))
 
 
 @router.post("/search")
-async def search_programs(request: WelfareSearchRequest) -> dict[str, object]:
+async def search_programs(
+    request: WelfareSearchRequest,
+    _: Annotated[None, Depends(require_internal_token)] = None,
+) -> dict[str, object]:
     return {"items": search(embedding_store, request.query, request.limit), "source": "welfare-policy-chunks"}
 
 
 @router.post("/explanations")
-def explain_recommendation(request: WelfareExplanationRequest, settings: Settings = Depends(get_settings)):
+def explain_recommendation(
+    request: WelfareExplanationRequest,
+    settings: Settings = Depends(get_settings),
+    _: Annotated[None, Depends(require_internal_token)] = None,
+):
     llm = OpenAiCompatibleLlmClient(settings)
     try:
         return explain(request, llm)
@@ -70,7 +89,10 @@ def explain_recommendation(request: WelfareExplanationRequest, settings: Setting
 
 
 @router.post("/recommendations/mode")
-def recommendation_pass(request: WelfareRecommendationRequest) -> dict[str, object]:
+def recommendation_pass(
+    request: WelfareRecommendationRequest,
+    _: Annotated[None, Depends(require_internal_token)] = None,
+) -> dict[str, object]:
     return {
         "patient_id": request.patient_id,
         "mode": recommendation_mode(request),

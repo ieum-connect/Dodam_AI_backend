@@ -7,7 +7,8 @@ from app.infrastructure.welfare.spring_client import SpringWelfareClient
 from app.domain.welfare.policy_chunk import chunk_program
 from app.infrastructure.welfare.embedding_store import WelfareEmbeddingStore
 from app.application.welfare.search_policy import search
-from app.contracts.welfare import WelfareSearchRequest
+from app.contracts.welfare import WelfareExplanationRequest, WelfareSearchRequest
+from app.application.welfare.explain_recommendation import explain
 
 embedding_store = WelfareEmbeddingStore()
 
@@ -49,3 +50,8 @@ async def sync_embeddings(client: SpringWelfareClient = Depends(welfare_client))
 @router.post("/search")
 async def search_programs(request: WelfareSearchRequest) -> dict[str, object]:
     return {"items": search(embedding_store, request.query, request.limit), "source": "welfare-policy-chunks"}
+
+
+@router.post("/explanations")
+def explain_recommendation(request: WelfareExplanationRequest):
+    return explain(request)

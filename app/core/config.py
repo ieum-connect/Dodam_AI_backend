@@ -55,6 +55,8 @@ class Settings(BaseSettings):
                 "임베딩 컬럼이 vector(768)로 고정되어 있습니다."
             )
         return value
+    spring_backend_base_url: str = Field(default="http://localhost:8081", min_length=1)
+    spring_backend_timeout_seconds: float = Field(default=10, gt=0, le=60)
 
 
 @lru_cache

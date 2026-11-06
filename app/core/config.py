@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     llm_max_retries: int = Field(default=2, ge=0, le=5)
     llm_temperature: float = Field(default=0.2, ge=0, le=1)
     llm_reasoning_effort: str = "low"
+    embedding_model: str = Field(default="text-embedding-3-small", min_length=1)
     document_render_dpi: int = Field(default=150, gt=0)
     document_max_pages: int = Field(default=30, gt=0)
     document_max_page_side_px: int = Field(default=2048, gt=0)

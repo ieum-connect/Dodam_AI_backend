@@ -6,6 +6,8 @@ from app.core.config import Settings, get_settings
 from app.infrastructure.welfare.spring_client import SpringWelfareClient
 from app.domain.welfare.policy_chunk import chunk_program
 from app.infrastructure.welfare.embedding_store import WelfareEmbeddingStore
+from app.application.welfare.search_policy import search
+from app.contracts.welfare import WelfareSearchRequest
 
 embedding_store = WelfareEmbeddingStore()
 
@@ -42,3 +44,8 @@ async def sync_embeddings(client: SpringWelfareClient = Depends(welfare_client))
     chunks = [chunk for program in programs for chunk in chunk_program(program)]
     changed = embedding_store.upsert(chunks)
     return {"changed": len(changed), "total": len(embedding_store.all()), "model": "content-hash-v1"}
+
+
+@router.post("/search")
+async def search_programs(request: WelfareSearchRequest) -> dict[str, object]:
+    return {"items": search(embedding_store, request.query, request.limit), "source": "welfare-policy-chunks"}

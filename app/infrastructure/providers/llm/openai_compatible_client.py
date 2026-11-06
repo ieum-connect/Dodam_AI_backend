@@ -32,7 +32,8 @@ class OpenAiCompatibleLlmClient:
         self._settings = settings
         self._client = (
             OpenAI(
-                api_key=settings.llm_api_key.get_secret_value() if settings.llm_api_key else "",
+                api_key=(settings.llm_api_key or settings.openai_api_key).get_secret_value()
+                if (settings.llm_api_key or settings.openai_api_key) else "",
                 base_url=settings.llm_base_url,
                 timeout=settings.llm_timeout_seconds,
                 max_retries=settings.llm_max_retries,
@@ -105,7 +106,7 @@ class OpenAiCompatibleLlmClient:
 
     def generate_text(self, system_prompt: str, user_prompt: str) -> str:
         """복지 설명처럼 짧은 일반 텍스트를 생성한다."""
-        if self._settings.llm_api_key is None:
+        if self._settings.llm_api_key is None and self._settings.openai_api_key is None:
             raise AiResultGenerationError(AiResultErrorCode.AI_API_KEY_MISSING, retryable=False)
         response = self._client.chat.completions.create(
             model=self._settings.llm_model,

@@ -7,7 +7,8 @@ class EmbeddingProvider:
     def __init__(self, settings: Settings) -> None:
         self.model = settings.embedding_model
         self.client = OpenAI(
-            api_key=settings.llm_api_key.get_secret_value() if settings.llm_api_key else "",
+            api_key=(settings.llm_api_key or settings.openai_api_key).get_secret_value()
+            if (settings.llm_api_key or settings.openai_api_key) else "",
             base_url=settings.llm_base_url,
             timeout=settings.llm_timeout_seconds,
         )

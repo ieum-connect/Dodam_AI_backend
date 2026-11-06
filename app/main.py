@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from app.api.error_handlers import register_error_handlers
 from app.api.internal.v1.ai_result_document_router import router as ai_result_document_router
 from app.api.internal.v1.document_analysis_router import router as document_analysis_router
+from app.api.internal.v1.welfare_router import router as welfare_router
 from app.application.use_cases.generate_result_document import GenerateResultDocumentUseCase
 from app.core.config import get_settings
 from app.infrastructure.providers.llm.openai_compatible_client import OpenAiCompatibleLlmClient
@@ -27,6 +28,7 @@ app = FastAPI(title="Dodam AI Backend", lifespan=lifespan)
 register_error_handlers(app)
 app.include_router(ai_result_document_router)
 app.include_router(document_analysis_router)
+app.include_router(welfare_router)
 
 
 @app.get("/health")

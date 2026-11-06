@@ -7,6 +7,8 @@ from app.infrastructure.providers.llm.openai_compatible_client import OpenAiComp
 from app.infrastructure.welfare.spring_client import SpringWelfareClient
 from app.domain.welfare.policy_chunk import chunk_program
 from app.infrastructure.welfare.embedding_store import WelfareEmbeddingStore
+from app.infrastructure.welfare.embedding_provider import EmbeddingProvider
+from app.infrastructure.welfare.pgvector_repository import PgVectorEmbeddingRepository
 from app.application.welfare.search_policy import search
 from app.contracts.welfare import WelfareExplanationRequest, WelfareRecommendationRequest, WelfareSearchRequest
 from app.application.welfare.recommend_by_profile import recommendation_mode
@@ -45,8 +47,12 @@ async def chunk_programs(client: SpringWelfareClient = Depends(welfare_client)) 
 async def sync_embeddings(client: SpringWelfareClient = Depends(welfare_client)) -> dict[str, object]:
     programs = await client.list_programs()
     chunks = [chunk for program in programs for chunk in chunk_program(program)]
-    changed = embedding_store.upsert(chunks)
-    return {"changed": len(changed), "total": len(embedding_store.all()), "model": "content-hash-v1"}
+    try:
+        changed = PgVectorEmbeddingRepository(EmbeddingProvider(get_settings())).upsert(chunks)
+        return {"changed": changed, "total": len(chunks), "model": get_settings().embedding_model, "storage": "pgvector"}
+    except Exception:
+        changed = embedding_store.upsert(chunks)
+        return {"changed": len(changed), "total": len(embedding_store.all()), "model": "content-hash-v1", "storage": "memory-fallback"}
 
 
 @router.post("/search")

@@ -28,6 +28,14 @@ class WelfareSearchRequest(BaseModel):
     limit: int = Field(default=10, ge=1, le=50)
 
 
+class WelfareRecommendationRequest(BaseModel):
+    patient_id: str
+    profile: WelfareProfile
+    additional_profile: dict[str, str | int | bool | None] = Field(default_factory=dict)
+    storage_consent: bool = False
+    proactive: bool = False
+
+
 class WelfareSearchResult(BaseModel):
     program_id: str
     name: str

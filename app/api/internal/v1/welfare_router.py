@@ -7,7 +7,8 @@ from app.infrastructure.welfare.spring_client import SpringWelfareClient
 from app.domain.welfare.policy_chunk import chunk_program
 from app.infrastructure.welfare.embedding_store import WelfareEmbeddingStore
 from app.application.welfare.search_policy import search
-from app.contracts.welfare import WelfareExplanationRequest, WelfareSearchRequest
+from app.contracts.welfare import WelfareExplanationRequest, WelfareRecommendationRequest, WelfareSearchRequest
+from app.application.welfare.recommend_by_profile import recommendation_mode
 from app.application.welfare.explain_recommendation import explain
 
 embedding_store = WelfareEmbeddingStore()
@@ -55,3 +56,13 @@ async def search_programs(request: WelfareSearchRequest) -> dict[str, object]:
 @router.post("/explanations")
 def explain_recommendation(request: WelfareExplanationRequest):
     return explain(request)
+
+
+@router.post("/recommendations/mode")
+def recommendation_pass(request: WelfareRecommendationRequest) -> dict[str, object]:
+    return {
+        "patient_id": request.patient_id,
+        "mode": recommendation_mode(request),
+        "storage_consent": request.storage_consent,
+        "proactive_enabled": request.proactive and request.storage_consent,
+    }

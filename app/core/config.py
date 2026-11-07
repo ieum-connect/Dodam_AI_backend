@@ -19,17 +19,12 @@ class Settings(BaseSettings):
     # 결과 문서 작업이 아닌 VLM 파이프라인도 이 설정을 사용하므로, 실제 호출 시점에만 키를 검증한다.
     llm_api_key: SecretStr | None = None
     llm_base_url: str = Field(default="https://api.openai.com/v1", min_length=1)
-    llm_model: str = Field(default="gpt-6-luna", min_length=1)
+    # 도담 답변 생성에 사용하는 모델. 환경 변수 LLM_MODEL로 덮어쓸 수 있다.
+    llm_model: str = Field(default="gpt-5.6-sol", min_length=1)
     llm_timeout_seconds: float = Field(default=90, gt=0, le=120)
     llm_max_retries: int = Field(default=2, ge=0, le=5)
     llm_temperature: float = Field(default=0.2, ge=0, le=1)
     llm_reasoning_effort: str = "low"
-    embedding_model: str = Field(default="text-embedding-3-small", min_length=1)
-    embedding_api_key: SecretStr | None = None
-    medical_rag_embedding_model: str = Field(
-        default="text-embedding-3-small", min_length=1
-    )
-    medical_rag_embedding_dimensions: int = Field(default=768, ge=1)
     medical_rag_search_limit: int = Field(default=12, ge=1, le=50)
     medical_rag_max_evidence: int = Field(default=20, ge=1, le=40)
     document_render_dpi: int = Field(default=150, gt=0)

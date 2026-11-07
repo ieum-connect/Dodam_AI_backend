@@ -32,7 +32,8 @@ class OpenAiCompatibleLlmClient:
         self._settings = settings
         self._client = (
             OpenAI(
-                api_key=settings.llm_api_key.get_secret_value() if settings.llm_api_key else "",
+                api_key=(settings.llm_api_key or settings.openai_api_key).get_secret_value()
+                if (settings.llm_api_key or settings.openai_api_key) else "",
                 base_url=settings.llm_base_url,
                 timeout=settings.llm_timeout_seconds,
                 max_retries=settings.llm_max_retries,
@@ -52,7 +53,6 @@ class OpenAiCompatibleLlmClient:
         try:
             request_kwargs = {
                 "model": self._settings.llm_model,
-                "temperature": self._settings.llm_temperature,
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
@@ -69,6 +69,12 @@ class OpenAiCompatibleLlmClient:
             # Gemini OpenAI 호환 API는 OpenAI 전용 reasoning_effort를 받지 않는다.
             if self._settings.llm_provider != "gemini_openai_compatible":
                 request_kwargs["reasoning_effort"] = self._settings.llm_reasoning_effort
+                if self._settings.llm_reasoning_effort == "none" and not self._settings.llm_model.startswith("gpt-5"):
+                    request_kwargs["temperature"] = self._settings.llm_temperature
+            else:
+                request_kwargs["temperature"] = self._settings.llm_temperature
+            if self._settings.llm_model.startswith("gpt-5"):
+                request_kwargs.pop("temperature", None)
             response = self._client.chat.completions.create(**request_kwargs)
         except APITimeoutError:
             raise AiResultGenerationError(AiResultErrorCode.AI_TIMEOUT, retryable=True) from None
@@ -102,3 +108,22 @@ class OpenAiCompatibleLlmClient:
             raise AiResultGenerationError(
                 AiResultErrorCode.AI_RESPONSE_INVALID, retryable=True
             ) from None
+
+    def generate_text(self, system_prompt: str, user_prompt: str) -> str:
+        """복지 설명처럼 짧은 일반 텍스트를 생성한다."""
+        if self._settings.llm_api_key is None and self._settings.openai_api_key is None:
+            raise AiResultGenerationError(AiResultErrorCode.AI_API_KEY_MISSING, retryable=False)
+        request_kwargs = {
+            "model": self._settings.llm_model,
+            "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+        }
+        if self._settings.llm_provider != "gemini_openai_compatible":
+            request_kwargs["reasoning_effort"] = self._settings.llm_reasoning_effort
+            if self._settings.llm_reasoning_effort == "none":
+                request_kwargs["temperature"] = self._settings.llm_temperature
+        else:
+            request_kwargs["temperature"] = self._settings.llm_temperature
+        if self._settings.llm_model.startswith("gpt-5"):
+            request_kwargs.pop("temperature", None)
+        response = self._client.chat.completions.create(**request_kwargs)
+        return (response.choices[0].message.content or "").strip()

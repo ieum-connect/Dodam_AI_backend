@@ -230,6 +230,12 @@ class FakeChunkRepository:
         )
         self.replaced = replaced
 
+    def mark_indexing(self, document_id: UUID, started_at: datetime) -> bool:
+        return True
+
+    def mark_index_failed(self, document_id: UUID, error_code: str) -> None:
+        return None
+
     def find_page_texts(self, document_id: UUID) -> list[PageText]:
         """호출을 기록하고 정해 둔 원문 페이지를 돌려준다."""
         self.calls.append(("find_page_texts", document_id))

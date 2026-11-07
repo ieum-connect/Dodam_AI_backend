@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import ColumnElement, Exists, Row, Select, delete, func, insert, select
+from sqlalchemy import ColumnElement, Exists, Row, Select, delete, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -28,6 +28,44 @@ class SqlAlchemyDocumentChunkRepository:
 
     def __init__(self, session_factory: sessionmaker[Session]) -> None:
         self._session_factory = session_factory
+
+    def mark_indexing(self, document_id: UUID, started_at: datetime) -> bool:
+        with self._session_factory.begin() as session:
+            result = session.execute(
+                update(DocumentModel)
+                .where(DocumentModel.id == document_id, *DOCUMENT_NOT_DELETED)
+                .values(
+                    embedding_status="INDEXING",
+                    embedding_started_at=started_at,
+                    embedding_error_code=None,
+                    embedding_retry_count=DocumentModel.embedding_retry_count + 1,
+                )
+            )
+            return result.rowcount == 1
+
+    def mark_index_failed(self, document_id: UUID, error_code: str) -> None:
+        with self._session_factory.begin() as session:
+            has_embedding = session.execute(
+                select(EmbeddingModel.id)
+                .join(DocumentChunkModel, DocumentChunkModel.id == EmbeddingModel.source_id)
+                .join(
+                    DocumentAnalysisModel,
+                    DocumentAnalysisModel.id == DocumentChunkModel.analysis_id,
+                )
+                .where(
+                    DocumentAnalysisModel.document_id == document_id,
+                    EmbeddingModel.source_type == SOURCE_TYPE_DOCUMENT_CHUNK,
+                )
+                .limit(1)
+            ).scalar_one_or_none()
+            session.execute(
+                update(DocumentModel)
+                .where(DocumentModel.id == document_id, *DOCUMENT_NOT_DELETED)
+                .values(
+                    embedding_status="READY" if has_embedding else "FAILED",
+                    embedding_error_code=error_code[:100],
+                )
+            )
 
     def find_page_texts(self, document_id: UUID) -> list[PageText]:
         """문서의 페이지 원문을 page_no 순서로 읽는다."""
@@ -188,6 +226,17 @@ class SqlAlchemyDocumentChunkRepository:
                 )
             if old_chunk_ids:
                 _delete_old_chunks(session, document_id, analysis_id, old_chunk_ids)
+            session.execute(
+                update(DocumentModel)
+                .where(DocumentModel.id == document_id)
+                .values(
+                    embedding_status="READY",
+                    embedding_model=embeddings.model_name or None,
+                    embedding_dimensions=embeddings.dimensions or None,
+                    embedding_completed_at=created_at,
+                    embedding_error_code=None,
+                )
+            )
             return True
 
     def add_missing_embeddings(
@@ -225,6 +274,17 @@ class SqlAlchemyDocumentChunkRepository:
             ]
             if rows:
                 session.execute(insert(EmbeddingModel), rows)
+            session.execute(
+                update(DocumentModel)
+                .where(DocumentModel.id == document_id)
+                .values(
+                    embedding_status="READY",
+                    embedding_model=embeddings.model_name,
+                    embedding_dimensions=embeddings.dimensions,
+                    embedding_completed_at=created_at,
+                    embedding_error_code=None,
+                )
+            )
             return True
 
 
@@ -328,7 +388,9 @@ def _delete_old_chunks(
     try:
         # 청크 삭제만 되돌리고 임베딩 삭제와 새 적재는 유지해야 검색에서 이전 청크가 빠진다.
         with session.begin_nested():
-            session.execute(delete(DocumentChunkModel).where(DocumentChunkModel.id.in_(old_chunk_ids)))
+            session.execute(
+                delete(DocumentChunkModel).where(DocumentChunkModel.id.in_(old_chunk_ids))
+            )
     except IntegrityError as error:
         logger.warning(
             "인용된 이전 청크를 남겨 둡니다: document_id=%s, analysis_id=%s, error=%s",

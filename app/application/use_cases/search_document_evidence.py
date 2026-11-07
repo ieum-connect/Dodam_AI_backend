@@ -40,15 +40,34 @@ class SearchDocumentEvidenceUseCase:
             for item in items
             if item.document_status == "NEEDS_REVIEW"
         }
+        index_warnings = self._repository.index_warnings(
+            request.patient_id, request.allowed_document_ids
+        )
+        searchable_document_ids = self._repository.searchable_document_ids(
+            request.patient_id, request.allowed_document_ids
+        )
+        warnings = [
+            DocumentEvidenceWarning(
+                code="PARTIAL_DOCUMENT_ANALYSIS", document_id=document_id
+            )
+            for document_id in sorted(warning_document_ids, key=str)
+        ]
+        warnings.extend(
+            DocumentEvidenceWarning(
+                code=(
+                    "DOCUMENT_INDEX_FAILED"
+                    if embedding_status == "FAILED"
+                    else "DOCUMENT_INDEX_PENDING"
+                ),
+                document_id=document_id,
+            )
+            for document_id, embedding_status in index_warnings
+        )
         return DocumentEvidenceSearchResponse(
             request_id=request.request_id,
             model_name=self._provider.model,
             dimensions=self._provider.dimensions,
+            searchable_document_ids=searchable_document_ids,
             items=items,
-            warnings=[
-                DocumentEvidenceWarning(
-                    code="PARTIAL_DOCUMENT_ANALYSIS", document_id=document_id
-                )
-                for document_id in sorted(warning_document_ids, key=str)
-            ],
+            warnings=warnings,
         )

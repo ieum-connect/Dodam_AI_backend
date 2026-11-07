@@ -3,7 +3,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import String, Uuid
+from sqlalchemy import Integer, String, Uuid
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -26,6 +26,17 @@ class DocumentModel(Base):
     status_changed_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True, precision=6))
     updated_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True, precision=6))
     deleted_at: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True, precision=6))
+    embedding_status: Mapped[str] = mapped_column(String(20))
+    embedding_model: Mapped[str | None] = mapped_column(String(100))
+    embedding_dimensions: Mapped[int | None] = mapped_column(Integer)
+    embedding_started_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True, precision=6)
+    )
+    embedding_completed_at: Mapped[datetime | None] = mapped_column(
+        TIMESTAMP(timezone=True, precision=6)
+    )
+    embedding_error_code: Mapped[str | None] = mapped_column(String(100))
+    embedding_retry_count: Mapped[int] = mapped_column(Integer)
 
 
 # 삭제되지 않은 문서 조건. 분석 대상 조회와 재색인 대상 조회가 같은 기준을 쓴다.

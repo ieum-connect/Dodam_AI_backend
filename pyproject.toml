@@ -30,6 +30,9 @@ dev = [
 [tool.setuptools.packages.find]
 include = ["app*"]
 
+[tool.setuptools.package-data]
+"app.domain.vaccination" = ["data/*.json"]
+
 [tool.ruff]
 target-version = "py312"
 line-length = 100

@@ -69,10 +69,12 @@ class OpenAiCompatibleLlmClient:
             # Gemini OpenAI 호환 API는 OpenAI 전용 reasoning_effort를 받지 않는다.
             if self._settings.llm_provider != "gemini_openai_compatible":
                 request_kwargs["reasoning_effort"] = self._settings.llm_reasoning_effort
-                if self._settings.llm_reasoning_effort == "none":
+                if self._settings.llm_reasoning_effort == "none" and not self._settings.llm_model.startswith("gpt-5"):
                     request_kwargs["temperature"] = self._settings.llm_temperature
             else:
                 request_kwargs["temperature"] = self._settings.llm_temperature
+            if self._settings.llm_model.startswith("gpt-5"):
+                request_kwargs.pop("temperature", None)
             response = self._client.chat.completions.create(**request_kwargs)
         except APITimeoutError:
             raise AiResultGenerationError(AiResultErrorCode.AI_TIMEOUT, retryable=True) from None
@@ -121,5 +123,7 @@ class OpenAiCompatibleLlmClient:
                 request_kwargs["temperature"] = self._settings.llm_temperature
         else:
             request_kwargs["temperature"] = self._settings.llm_temperature
+        if self._settings.llm_model.startswith("gpt-5"):
+            request_kwargs.pop("temperature", None)
         response = self._client.chat.completions.create(**request_kwargs)
         return (response.choices[0].message.content or "").strip()

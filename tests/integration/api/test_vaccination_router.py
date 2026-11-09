@@ -50,7 +50,13 @@ def test_valid_request_returns_schedule(client: TestClient) -> None:
     assert response.status_code == 200
     body = response.json()
     assert set(body) == {
-        "scheduleVersion", "asOf", "ageMonths", "next", "groups", "counts", "vaccines",
+        "scheduleVersion",
+        "asOf",
+        "ageMonths",
+        "next",
+        "groups",
+        "counts",
+        "vaccines",
     }
     assert body["scheduleVersion"] == "KDCA 2026-01-02"
     assert body["asOf"] == "2026-11-08"
@@ -58,7 +64,14 @@ def test_valid_request_returns_schedule(client: TestClient) -> None:
     assert set(body["groups"]) == {"now", "soon", "past", "laterCount"}
     assert body["counts"]["done"] == 1
     assert set(body["next"]) == {
-        "doseId", "vaccineId", "name", "label", "recFrom", "recTo", "delayFrom", "group",
+        "doseId",
+        "vaccineId",
+        "name",
+        "label",
+        "recFrom",
+        "recTo",
+        "delayFrom",
+        "group",
     }
 
 
@@ -66,6 +79,15 @@ def test_unknown_dose_id_is_400(client: TestClient) -> None:
     response = _post(client, {**BODY, "completedDoses": ["DTAP-9"]})
     assert response.status_code == 400
     assert response.json()["code"] == "VACCINATION_002"
+
+
+def test_unknown_dose_ids_are_listed_sorted(client: TestClient) -> None:
+    response = _post(client, {**BODY, "completedDoses": ["RV-7", "BCG-1", "DTAP-9"]})
+    assert response.status_code == 400
+    body = response.json()
+    assert body["code"] == "VACCINATION_002"
+    assert body["message"] == "알 수 없는 접종 차수가 포함되어 있습니다."
+    assert body["unknownDoseIds"] == ["DTAP-9", "RV-7"]
 
 
 def test_birth_after_as_of_is_400(client: TestClient) -> None:

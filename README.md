@@ -47,3 +47,12 @@ Spring은 업로드 커밋 후 `POST /internal/documents/{documentId}/analyze`�
 ## 예방접종 일정 계산
 
 Spring은 `POST /internal/vaccinations/schedule`(`X-Internal-Token`)에 `birthDate`, `asOf`, `completedDoses`를 보내 질병관리청 2026 일정 기준 묶음(now/soon/past)·다음 접종·개수를 받습니다. DB를 쓰지 않고 `app/domain/vaccination/data/kdca_2026-01-02.json`만 사용합니다.
+
+오류는 공통 오류와 같은 `code`·`message`·`timestamp` 모양의 400으로 내려갑니다.
+
+- `VACCINATION_001`: `birthDate`가 `asOf`보다 늦습니다.
+- `VACCINATION_002`: `completedDoses`에 일정에 없는 차수가 있습니다. `unknownDoseIds`(정렬, 중복 없음)에 모르는 차수를 전부 담습니다. Spring은 `completedDoses`를 비우지 말고 이 차수만 빼고 다시 호출합니다. 비우면 만료된 차수(예: 15주 지난 로타)가 응답에서 빠져 정상 완료 기록까지 사라집니다.
+
+```json
+{"code": "VACCINATION_002", "message": "알 수 없는 접종 차수가 포함되어 있습니다.", "timestamp": "2026-11-09T17:42:06.479040+00:00", "unknownDoseIds": ["DTAP-9", "RV-7"]}
+```

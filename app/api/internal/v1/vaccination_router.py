@@ -30,12 +30,15 @@ def calculate_schedule(
 
 
 async def handle_vaccination_error(_: Request, error: VaccinationError) -> JSONResponse:
-    """도메인 오류를 공통 오류와 같은 code·message·timestamp 모양으로 반환한다."""
-    return JSONResponse(
-        status_code=error.status_code,
-        content={
-            "code": error.code.value,
-            "message": error.message,
-            "timestamp": datetime.now(UTC).isoformat(),
-        },
-    )
+    """도메인 오류를 공통 오류와 같은 code·message·timestamp 모양으로 반환한다.
+
+    모르는 차수가 있으면 Spring이 그 차수만 빼고 다시 부를 수 있게 unknownDoseIds를 더한다.
+    """
+    content: dict[str, Any] = {
+        "code": error.code.value,
+        "message": error.message,
+        "timestamp": datetime.now(UTC).isoformat(),
+    }
+    if error.unknown_dose_ids:
+        content["unknownDoseIds"] = error.unknown_dose_ids
+    return JSONResponse(status_code=error.status_code, content=content)

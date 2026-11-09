@@ -151,6 +151,12 @@ def test_unknown_dose_id_is_rejected(dose_id: str) -> None:
     assert error.value.code is VaccinationErrorCode.UNKNOWN_DOSE_ID
 
 
+def test_unknown_dose_ids_are_collected_sorted_and_deduplicated() -> None:
+    with pytest.raises(VaccinationError) as error:
+        _compute(date(2026, 11, 8), ["RV-7", "BCG-1", "DTAP-9", "RV-7"])
+    assert error.value.unknown_dose_ids == ["DTAP-9", "RV-7"]
+
+
 def test_eighteen_month_example_next_is_now_with_earliest_rec_to() -> None:
     result = _compute(date(2026, 11, 8))
     now = result["groups"]["now"]

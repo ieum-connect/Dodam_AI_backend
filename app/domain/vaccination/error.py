@@ -21,9 +21,12 @@ class VaccinationError(Exception):
 
     status_code = 400
 
-    def __init__(self, code: VaccinationErrorCode) -> None:
+    def __init__(
+        self, code: VaccinationErrorCode, unknown_dose_ids: list[str] | None = None
+    ) -> None:
         super().__init__(code.value)
         self.code = code
+        self.unknown_dose_ids = unknown_dose_ids
 
     @property
     def message(self) -> str:

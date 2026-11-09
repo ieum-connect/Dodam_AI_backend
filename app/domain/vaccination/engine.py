@@ -86,8 +86,9 @@ def compute_schedule(
     if birth > as_of:
         raise VaccinationError(VaccinationErrorCode.BIRTH_AFTER_AS_OF)
     completed = set(completed_doses)
-    if not completed <= known_dose_ids(schedule):
-        raise VaccinationError(VaccinationErrorCode.UNKNOWN_DOSE_ID)
+    unknown = sorted(completed - known_dose_ids(schedule))
+    if unknown:
+        raise VaccinationError(VaccinationErrorCode.UNKNOWN_DOSE_ID, unknown)
 
     grace = schedule["rules"]["delayGrace"]
     vaccines: list[dict[str, Any]] = []

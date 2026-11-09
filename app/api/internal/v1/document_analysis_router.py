@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.api.internal.v1.ai_result_document_router import require_internal_token
 from app.application.services.retrying_page_extractor import RetryingPageExtractor
 from app.application.use_cases.analyze_document import analyze_document
+from app.application.use_cases.index_document_chunks import index_document_chunks
 from app.core.config import get_settings
 from app.domain.common.error import ApiError, CommonErrorCode
 from app.infrastructure.db.repositories.document_analysis_repository import (
@@ -84,3 +85,21 @@ def start_analysis(
     # Never use a supplied object key to choose a file: the worker reads ownership/storage from DB.
     background_tasks.add_task(run_analysis, document_id)
     return {"status": "accepted", "documentId": str(document_id)}
+
+
+@router.post("/{document_id}/reindex", status_code=202)
+def reindex_document(document_id: UUID, background_tasks: BackgroundTasks, _: None = Depends(require_internal_token)):
+    """기존 분석 결과를 다시 임베딩한다(모델 교체·실패 복구용 내부 API)."""
+    background_tasks.add_task(run_reindex, document_id)
+    return {"status": "accepted", "documentId": str(document_id)}
+
+
+def run_reindex(document_id: UUID) -> None:
+    settings = get_settings()
+    factory = get_session_factory()
+    repository = SqlAlchemyDocumentChunkRepository(factory)
+    embedder = create_text_embedder(settings)
+    try:
+        index_document_chunks(document_id, chunk_repository=repository, embedder=embedder)
+    finally:
+        embedder.close()

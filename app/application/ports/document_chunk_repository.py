@@ -86,3 +86,11 @@ class DocumentChunkRepository(Protocol):
         넣다가 실패하면 전부 롤백하고 예외를 올린다.
         """
         ...
+
+    def mark_indexing(self, document_id: UUID, started_at: datetime) -> bool:
+        """삭제되지 않은 문서의 색인 상태를 INDEXING으로 바꾼다."""
+        ...
+
+    def mark_index_failed(self, document_id: UUID, error_code: str) -> None:
+        """기존 임베딩이 없을 때만 FAILED로 바꾸고 오류 코드를 기록한다."""
+        ...

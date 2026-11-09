@@ -61,6 +61,12 @@ class FakeChunkRepository:
         self.replace_error = replace_error
         self.missing = MISSING_CHUNKS if missing is None else missing
 
+    def mark_indexing(self, document_id: UUID, started_at: datetime) -> bool:
+        return True
+
+    def mark_index_failed(self, document_id: UUID, error_code: str) -> None:
+        return None
+
     def find_chunks_without_embedding(self, analysis_id: UUID) -> list[ChunkText]:
         """호출을 기록하고 정해 둔 임베딩 없는 청크를 돌려준다."""
         self.calls.append(("find_chunks_without_embedding", analysis_id))

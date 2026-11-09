@@ -67,6 +67,35 @@ def test_checked_expired_dose_stays_done() -> None:
     assert _state(_compute(date(2026, 11, 8), ["RV-1"]), "RV-1") == "DONE"
 
 
+def _dose_ids(result: dict) -> list[str]:
+    groups = result["groups"]
+    return [d["doseId"] for key in ("now", "soon", "past") for d in groups[key]] + [
+        d["doseId"] for v in result["vaccines"] for d in v["doses"]
+    ]
+
+
+def test_rotavirus_dropped_entirely_when_first_dose_missed_max_start() -> None:
+    as_of = date(2025, 9, 5)
+    result = _compute(as_of)
+    assert not [d for d in _dose_ids(result) if d.startswith("RV-")]
+    assert result["next"]["vaccineId"] != "RV"
+    schedule = load_schedule()
+    without_rv = {**schedule, "vaccines": [v for v in schedule["vaccines"] if v["id"] != "RV"]}
+    assert result["counts"] == compute_schedule(without_rv, BIRTH, as_of, [])["counts"]
+
+
+@pytest.mark.parametrize("as_of", [date(2025, 8, 18), date(2025, 8, 19)])
+def test_rotavirus_dropped_from_max_start_day(as_of: date) -> None:
+    assert not [d for d in _dose_ids(_compute(as_of)) if d.startswith("RV-")]
+
+
+def test_rotavirus_later_doses_kept_when_first_dose_done() -> None:
+    result = _compute(date(2025, 9, 5), ["RV-1"])
+    assert _state(result, "RV-1") == "DONE"
+    assert _state(result, "RV-2") is not None
+    assert _state(result, "RV-3") is not None
+
+
 @pytest.mark.parametrize("vaccine_id", ["HIB", "PCV"])
 def test_hib_and_pcv_need_four_doses_without_records(vaccine_id: str) -> None:
     result = _compute(date(2026, 11, 8))

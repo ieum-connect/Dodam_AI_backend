@@ -98,6 +98,13 @@ def compute_schedule(
         if vaccine.get("info"):
             continue
         doses = _default_variant(vaccine)["doses"]
+        first = doses[0]
+        if (
+            first.get("maxStart")
+            and f"{vaccine['id']}-{first['n']}" not in completed
+            and as_of >= add_age(birth, first["maxStart"])
+        ):
+            continue  # 1차 시작 시한이 지났고 1차 미접종: 백신 전체 EXPIRED
         total = len(doses)
         if vaccine.get("plan"):
             # 기록이 없으므로 첫 권장 시기에 제때 시작했다고 보고 필요 횟수를 정한다.
@@ -156,8 +163,6 @@ def compute_schedule(
 
 
 def _expired(dose: dict[str, Any], birth: date, as_of: date) -> bool:
-    if dose.get("maxStart") and dose["n"] == 1 and as_of >= add_age(birth, dose["maxStart"]):
-        return True
     return bool(dose.get("deadline")) and as_of >= add_age(birth, dose["deadline"])
 
 

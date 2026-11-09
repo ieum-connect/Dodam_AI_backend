@@ -93,6 +93,7 @@ def _fill_missing_embeddings(
 ) -> ChunkIndexResult:
     """임베딩이 없는 청크의 본문만 임베딩해 채운다. 예외는 결과로 돌려준다."""
     try:
+        chunk_repository.mark_indexing(document_id, datetime.now(UTC))
         chunks = chunk_repository.find_chunks_without_embedding(analysis_id)
         if not chunks:
             return _skipped(document_id, analysis_id, ChunkIndexSkipReason.ALREADY_INDEXED)
@@ -104,6 +105,7 @@ def _fill_missing_embeddings(
     except Exception as error:
         _log_failure(document_id, analysis_id, error)
         code = error.code.value if isinstance(error, TextEmbeddingError) else UNEXPECTED_ERROR_CODE
+        _record_index_failure(chunk_repository, document_id, code)
         return ChunkIndexResult(ChunkIndexOutcome.FAILED, analysis_id=analysis_id, error_code=code)
     if not added:
         return _skipped(document_id, analysis_id, ChunkIndexSkipReason.SUPERSEDED)
@@ -131,6 +133,7 @@ def index_analysis_chunks(
     분석 직후 호출에서 이미 저장한 분석 결과가 FAILED로 바뀌지 않게 하려는 것이다.
     """
     try:
+        chunk_repository.mark_indexing(document_id, datetime.now(UTC))
         chunks = chunk_pages(chunk_repository.find_page_texts(document_id))
         # 임베딩 호출은 오래 걸리므로 DB 트랜잭션 밖에서 끝낸다.
         embeddings = (
@@ -145,6 +148,7 @@ def index_analysis_chunks(
     except Exception as error:
         _log_failure(document_id, analysis_id, error)
         code = error.code.value if isinstance(error, TextEmbeddingError) else UNEXPECTED_ERROR_CODE
+        _record_index_failure(chunk_repository, document_id, code)
         return ChunkIndexResult(ChunkIndexOutcome.FAILED, analysis_id=analysis_id, error_code=code)
     if not replaced:
         return _skipped(document_id, analysis_id, ChunkIndexSkipReason.SUPERSEDED)
@@ -183,3 +187,16 @@ def _log_failure(document_id: UUID, analysis_id: UUID | None, error: Exception) 
         type(error).__name__,
         f"({error.code})" if isinstance(error, TextEmbeddingError) else "",
     )
+
+
+def _record_index_failure(
+    chunk_repository: DocumentChunkRepository, document_id: UUID, error_code: str
+) -> None:
+    try:
+        chunk_repository.mark_index_failed(document_id, error_code)
+    except Exception as error:
+        logger.error(
+            "색인 실패 상태 기록 오류: document_id=%s, error=%s",
+            document_id,
+            type(error).__name__,
+        )

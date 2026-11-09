@@ -42,5 +42,6 @@ class DocumentEvidenceSearchResponse(BaseModel):
     request_id: UUID
     model_name: str
     dimensions: int
+    searchable_document_ids: list[UUID]
     items: list[DocumentEvidenceItem]
     warnings: list[DocumentEvidenceWarning]

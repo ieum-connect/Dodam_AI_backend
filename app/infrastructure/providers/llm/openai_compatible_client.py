@@ -28,17 +28,22 @@ class LlmClient(Protocol):
 class OpenAiCompatibleLlmClient:
     """환경 변수로 받은 호환 endpoint에 요청한다."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, *, use_embedding_api_key: bool = False) -> None:
         self._settings = settings
+        # 의료 채팅만 임베딩 키를 사용한다. 복지 클라이언트는 기본값으로 LLM 키를 쓴다.
+        api_key = (
+            settings.embedding_api_key
+            if use_embedding_api_key
+            else settings.llm_api_key or settings.openai_api_key
+        )
         self._client = (
             OpenAI(
-                api_key=(settings.llm_api_key or settings.openai_api_key).get_secret_value()
-                if (settings.llm_api_key or settings.openai_api_key) else "",
+                api_key=api_key.get_secret_value() if api_key else "",
                 base_url=settings.llm_base_url,
                 timeout=settings.llm_timeout_seconds,
                 max_retries=settings.llm_max_retries,
             )
-            if settings.llm_api_key and settings.llm_api_key.get_secret_value()
+            if api_key and api_key.get_secret_value()
             else None
         )
 
@@ -51,6 +56,22 @@ class OpenAiCompatibleLlmClient:
         if self._client is None:
             raise AiResultGenerationError(AiResultErrorCode.AI_API_KEY_MISSING, retryable=False)
         try:
+            schema = GeneratedAnswer.model_json_schema()
+            # gpt-5.6-sol의 strict structured output은 루트 객체에
+            # additionalProperties=false를 요구한다.
+            def close_objects(node: object) -> None:
+                if not isinstance(node, dict):
+                    return
+                if node.get("type") == "object":
+                    node.setdefault("additionalProperties", False)
+                for value in node.values():
+                    if isinstance(value, dict):
+                        close_objects(value)
+                    elif isinstance(value, list):
+                        for item in value:
+                            close_objects(item)
+
+            close_objects(schema)
             request_kwargs = {
                 "model": self._settings.llm_model,
                 "messages": [
@@ -62,7 +83,7 @@ class OpenAiCompatibleLlmClient:
                     "json_schema": {
                         "name": "grounded_answer",
                         "strict": True,
-                        "schema": GeneratedAnswer.model_json_schema(),
+                        "schema": schema,
                     },
                 },
             }
@@ -111,7 +132,10 @@ class OpenAiCompatibleLlmClient:
 
     def generate_text(self, system_prompt: str, user_prompt: str) -> str:
         """복지 설명처럼 짧은 일반 텍스트를 생성한다."""
-        if self._settings.llm_api_key is None and self._settings.openai_api_key is None:
+        if (
+            self._settings.llm_api_key is None
+            and self._settings.openai_api_key is None
+        ):
             raise AiResultGenerationError(AiResultErrorCode.AI_API_KEY_MISSING, retryable=False)
         request_kwargs = {
             "model": self._settings.llm_model,

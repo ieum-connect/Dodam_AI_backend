@@ -46,6 +46,7 @@ class DocumentEvidenceRepository:
               AND d.id IN :document_ids
               AND d.deleted_at IS NULL
               AND d.status <> 'DELETED'
+              AND d.embedding_status = 'READY'
               AND (v.id IS NULL OR v.deleted_at IS NULL)
               AND e.model_name = :model_name
               AND e.dimensions = :dimensions
@@ -77,3 +78,50 @@ class DocumentEvidenceRepository:
             )
             for row in rows
         ]
+
+    def index_warnings(
+        self, patient_id: UUID, allowed_document_ids: Sequence[UUID]
+    ) -> list[tuple[UUID, str]]:
+        if not allowed_document_ids:
+            return []
+        statement = text(
+            """
+            SELECT d.id, d.embedding_status
+            FROM documents d
+            LEFT JOIN visits v ON v.id = d.visit_id
+            WHERE d.patient_id = :patient_id
+              AND d.id IN :document_ids
+              AND d.deleted_at IS NULL
+              AND d.status <> 'DELETED'
+              AND (v.id IS NULL OR v.deleted_at IS NULL)
+              AND d.embedding_status <> 'READY'
+            """
+        ).bindparams(bindparam("document_ids", expanding=True))
+        with self._session_factory() as session:
+            return list(session.execute(
+                statement,
+                {"patient_id": patient_id, "document_ids": list(allowed_document_ids)},
+            ).all())
+
+    def searchable_document_ids(
+        self, patient_id: UUID, allowed_document_ids: Sequence[UUID]
+    ) -> list[UUID]:
+        if not allowed_document_ids:
+            return []
+        statement = text(
+            """
+            SELECT d.id FROM documents d
+            LEFT JOIN visits v ON v.id = d.visit_id
+            WHERE d.patient_id = :patient_id
+              AND d.id IN :document_ids
+              AND d.deleted_at IS NULL
+              AND d.status <> 'DELETED'
+              AND d.embedding_status = 'READY'
+              AND (v.id IS NULL OR v.deleted_at IS NULL)
+            """
+        ).bindparams(bindparam("document_ids", expanding=True))
+        with self._session_factory() as session:
+            return list(session.execute(
+                statement,
+                {"patient_id": patient_id, "document_ids": list(allowed_document_ids)},
+            ).scalars())

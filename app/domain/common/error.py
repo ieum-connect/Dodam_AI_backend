@@ -28,7 +28,7 @@ _MESSAGE_BY_CODE: dict[CommonErrorCode, str] = {
 }
 
 
-@dataclass(frozen=True)
+@dataclass
 class ApiError(Exception):
     """공통 코드와 안전한 사용자 메시지만 HTTP 계층으로 전달한다."""
 

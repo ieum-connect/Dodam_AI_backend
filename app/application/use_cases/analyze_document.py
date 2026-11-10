@@ -1,11 +1,12 @@
 """documentId 하나를 분석하는 유스케이스.
 
-원본 읽기 → 페이지 저장 → VLM 추출 → 추출 결과와 최종 상태 기록 순서로 실행한다.
+원본 읽기 → 페이지 저장 → VLM 추출 → 추출 결과와 최종 상태 기록 → 청크·임베딩 교체 순서로
+실행한다.
 """
 
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -13,6 +14,7 @@ from app.application.ports.document_analysis_repository import (
     AnalysisTarget,
     DocumentAnalysisRepository,
 )
+from app.application.ports.document_chunk_repository import DocumentChunkRepository
 from app.application.ports.document_page_repository import DocumentPageRepository
 from app.application.ports.document_storage import (
     DocumentNotFoundError,
@@ -26,6 +28,11 @@ from app.application.ports.page_extractor import (
     PageExtractionErrorCode,
     PageExtractor,
     VlmUsage,
+)
+from app.application.ports.text_embedder import TextEmbedder
+from app.application.use_cases.index_document_chunks import (
+    ChunkIndexResult,
+    index_analysis_chunks,
 )
 from app.domain.document.document_analysis import AnalysisFailure, DocumentStatus
 from app.domain.document.page_split import PageSplitError
@@ -100,11 +107,13 @@ class DocumentAnalysisResult:
 
     document_status는 기록한 문서 상태이고, 아무것도 바꾸지 않았으면 None이다.
     usages는 성공한 VLM 호출의 사용량이다. 아직 DB에 기록하지 않고 담아 두기만 한다.
+    index는 결과를 저장한 뒤 실행한 청크 색인의 결과이고, 색인을 실행하지 않았으면 None이다.
     """
 
     document_status: DocumentStatus | None
     failure: AnalysisFailure | None = None
     usages: tuple[VlmUsage, ...] = ()
+    index: ChunkIndexResult | None = None
 
 
 def analyze_document(
@@ -114,15 +123,21 @@ def analyze_document(
     writer: RenderedPageWriter,
     repository: DocumentAnalysisRepository,
     page_repository: DocumentPageRepository,
+    chunk_repository: DocumentChunkRepository,
+    embedder: TextEmbedder,
     extractor: PageExtractor,
     render_dpi: int,
     max_pages: int,
     max_page_side_px: int,
 ) -> DocumentAnalysisResult:
-    """문서 하나를 분석하고 결과와 상태를 기록한다.
+    """문서 하나를 분석하고 결과와 상태를 기록한 뒤 청크와 임베딩으로 색인한다.
 
     문서가 없거나 삭제됐거나, 분석 작업이 없거나 이미 SUCCEEDED면 아무것도 바꾸지 않는다.
+    끝날 때 더 새 분석이 생겨 있으면 이 분석 행의 상태만 기록하고 문서 상태와 페이지는
+    바꾸지 않는다. 이때 결과의 document_status는 None이고 색인하지 않는다.
     예상 밖 예외가 나면 FAILED로 기록한 뒤 그 예외를 다시 올린다.
+    청킹·임베딩·교체가 실패하면 로그를 남기고 결과의 index에 담는다. 문서 상태와 추출 항목은
+    바뀌지 않는다.
     """
     target = repository.find_target(document_id)
     # 시작 표시는 따로 commit해서 Spring 화면에 바로 보이게 한다.
@@ -147,7 +162,18 @@ def analyze_document(
         step = FailedStep.VLM_EXTRACTION
         # VLM 호출은 오래 걸리므로 DB 트랜잭션 밖에서 한다.
         outcomes = extract_pages(extractor, pages)
-        return _record_outcomes(repository, target, len(pages), outcomes)
+        result = _record_outcomes(repository, target, len(pages), outcomes)
+        # 결과를 실제로 저장한 분석만 색인한다. 원문은 save_result가 기록한다.
+        # 색인 실패는 결과로만 돌아오고 분석 결과를 바꾸지 않는다. 복구는 재색인이 한다.
+        if result.document_status is not None and result.failure is None:
+            index = index_analysis_chunks(
+                target.document_id,
+                target.analysis_id,
+                chunk_repository=chunk_repository,
+                embedder=embedder,
+            )
+            return replace(result, index=index)
+        return result
     except Exception as error:
         # 예외 메시지에는 원문이나 경로가 들어 있을 수 있어 클래스 이름만 남긴다.
         logger.error(

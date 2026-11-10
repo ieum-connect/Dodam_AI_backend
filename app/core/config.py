@@ -3,7 +3,7 @@
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -15,17 +15,18 @@ class Settings(BaseSettings):
     database_url: str
     ai_internal_token: SecretStr = Field(min_length=1)
     storage_local_root: str = Field(min_length=1)
-    llm_provider: str = "gemini_openai_compatible"
+    llm_provider: str = "openai"
     # 결과 문서 작업이 아닌 VLM 파이프라인도 이 설정을 사용하므로, 실제 호출 시점에만 키를 검증한다.
     llm_api_key: SecretStr | None = None
-    llm_base_url: str = Field(
-        default="https://generativelanguage.googleapis.com/v1beta/openai/", min_length=1
-    )
-    llm_model: str = Field(default="gemini-flash-lite-latest", min_length=1)
+    llm_base_url: str = Field(default="https://api.openai.com/v1", min_length=1)
+    # 도담 답변 생성에 사용하는 모델. 환경 변수 LLM_MODEL로 덮어쓸 수 있다.
+    llm_model: str = Field(default="gpt-5.6-sol", min_length=1)
     llm_timeout_seconds: float = Field(default=90, gt=0, le=120)
     llm_max_retries: int = Field(default=2, ge=0, le=5)
     llm_temperature: float = Field(default=0.2, ge=0, le=1)
     llm_reasoning_effort: str = "low"
+    medical_rag_search_limit: int = Field(default=12, ge=1, le=50)
+    medical_rag_max_evidence: int = Field(default=20, ge=1, le=40)
     document_render_dpi: int = Field(default=150, gt=0)
     document_max_pages: int = Field(default=30, gt=0)
     document_max_page_side_px: int = Field(default=2048, gt=0)
@@ -37,6 +38,26 @@ class Settings(BaseSettings):
     openai_vlm_connect_timeout_seconds: float = Field(default=10, gt=0)
     openai_vlm_max_retries: int = Field(default=2, ge=0)
     openai_vlm_retry_backoff_seconds: float = Field(default=1.0, ge=0)
+    # 청크 적재와 질의 검색이 함께 쓰는 임베딩 설정. 다른 기능의 키로 대체하지 않는다.
+    embedding_api_key: SecretStr | None = None
+    embedding_model: str = Field(default="text-embedding-3-small", min_length=1)
+    embedding_dimensions: int = 768
+    embedding_timeout_seconds: float = Field(default=30, gt=0)
+    embedding_max_retries: int = Field(default=2, ge=0)
+    embedding_retry_backoff_seconds: float = Field(default=1.0, ge=0)
+
+    @field_validator("embedding_dimensions")
+    @classmethod
+    def _embedding_dimensions_match_column(cls, value: int) -> int:
+        # 다른 값이면 OpenAI 호출은 성공해 비용이 나가고 DB 저장에서 매번 실패하므로 기동 때 막는다.
+        if value != 768:
+            raise ValueError(
+                "EMBEDDING_DIMENSIONS는 768만 쓸 수 있습니다. "
+                "임베딩 컬럼이 vector(768)로 고정되어 있습니다."
+            )
+        return value
+    spring_backend_base_url: str = Field(default="http://localhost:8081", min_length=1)
+    spring_backend_timeout_seconds: float = Field(default=10, gt=0, le=60)
 
 
 @lru_cache

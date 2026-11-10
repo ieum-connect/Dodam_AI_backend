@@ -8,10 +8,13 @@ from app.api.error_handlers import register_error_handlers
 from app.api.internal.v1.ai_result_document_router import router as ai_result_document_router
 from app.api.internal.v1.document_analysis_router import router as document_analysis_router
 from app.api.internal.v1.document_evidence_router import router as document_evidence_router
+from app.api.internal.v1.vaccination_router import handle_vaccination_error
+from app.api.internal.v1.vaccination_router import router as vaccination_router
 from app.api.internal.v1.welfare_router import router as welfare_router
 from app.application.use_cases.generate_result_document import GenerateResultDocumentUseCase
 from app.application.use_cases.search_document_evidence import SearchDocumentEvidenceUseCase
 from app.core.config import get_settings
+from app.domain.vaccination.error import VaccinationError
 from app.infrastructure.db.session import get_session_factory
 from app.infrastructure.medical_rag.document_evidence_repository import DocumentEvidenceRepository
 from app.infrastructure.medical_rag.embedding_provider import MedicalRagEmbeddingProvider
@@ -42,6 +45,8 @@ app.include_router(ai_result_document_router)
 app.include_router(document_analysis_router)
 app.include_router(document_evidence_router)
 app.include_router(welfare_router)
+app.include_router(vaccination_router)
+app.add_exception_handler(VaccinationError, handle_vaccination_error)
 
 
 @app.get("/health")

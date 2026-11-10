@@ -40,6 +40,19 @@ Spring은 업로드 커밋 후 `POST /internal/documents/{documentId}/analyze`�
 
 문서와 항목 내용으로 안정적인 후보 ID를 만들어 같은 항목의 재처리에도 보호자의 승인·거절 결정을 유지합니다. 성공한 재분석에서 사라진 승인 대기 후보는 취소하며, 동일 후보가 다시 추출되면 같은 ID로 승인 대기 상태에 복구합니다. 원본 문서가 삭제되면 Spring의 기존 이벤트가 승인 대기 후보를 취소합니다.
 
-일반 실행은 `.env`를 설정하고 `python -m uvicorn app.main:app --host 127.0.0.1 --port 8006`으로 합니다. Spring과 같은 DATABASE_URL, STORAGE_LOCAL_ROOT, AI_INTERNAL_TOKEN을 사용해야 하며 문서 판독에는 OPENAI_API_KEY와 계정에서 지원하는 OPENAI_VLM_MODEL이 필요합니다. API 키가 없으면 실제 판독은 실패로 기록하며 가짜 성공 결과를 반환하지 않습니다.
+일반 실행은 `.env`를 설정하고 `python -m uvicorn app.main:app --host 127.0.0.1 --port 8000`으로 합니다. Spring과 같은 DATABASE_URL, STORAGE_LOCAL_ROOT, AI_INTERNAL_TOKEN을 사용해야 하며 문서 판독에는 OPENAI_API_KEY와 계정에서 지원하는 OPENAI_VLM_MODEL이 필요합니다. API 키가 없으면 실제 판독은 실패로 기록하며 가짜 성공 결과를 반환하지 않습니다.
 
 키 없이 연결만 검증할 때는 `python -m tests.manual_contract_server`를 명시적으로 실행합니다. 이 테스트 진입점은 VLM 응답만 고정된 예시로 대체하고 파일 읽기·페이지 저장·결과 검증·후보 DB 저장은 실제 경로를 실행합니다. 프론트엔드는 VITE_AI_TEST_MODE=true로 예시 응답임을 표시해야 합니다. 이 모드는 AI 판독 품질이나 실제 공급자 호출을 검증하지 않으며 배포 진입점으로 사용하지 않습니다.
+
+## 예방접종 일정 계산
+
+Spring은 `POST /internal/vaccinations/schedule`(`X-Internal-Token`)에 `birthDate`, `asOf`, `completedDoses`를 보내 질병관리청 2026 일정 기준 묶음(now/soon/past)·다음 접종·개수를 받습니다. DB를 쓰지 않고 `app/domain/vaccination/data/kdca_2026-01-02.json`만 사용합니다.
+
+오류는 공통 오류와 같은 `code`·`message`·`timestamp` 모양의 400으로 내려갑니다.
+
+- `VACCINATION_001`: `birthDate`가 `asOf`보다 늦습니다.
+- `VACCINATION_002`: `completedDoses`에 일정에 없는 차수가 있습니다. `unknownDoseIds`(정렬, 중복 없음)에 모르는 차수를 전부 담습니다. Spring은 `completedDoses`를 비우지 말고 이 차수만 빼고 다시 호출합니다. 비우면 만료된 차수(예: 15주 지난 로타)가 응답에서 빠져 정상 완료 기록까지 사라집니다.
+
+```json
+{"code": "VACCINATION_002", "message": "알 수 없는 접종 차수가 포함되어 있습니다.", "timestamp": "2026-11-09T17:42:06.479040+00:00", "unknownDoseIds": ["DTAP-9", "RV-7"]}
+```

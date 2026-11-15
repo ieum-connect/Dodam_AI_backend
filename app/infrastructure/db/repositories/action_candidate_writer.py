@@ -13,10 +13,10 @@ from app.domain.document.page_extraction import PageExtraction
 def save_candidates(
     session: Session, document_id: UUID, pages: Mapping[int, PageExtraction]
 ) -> None:
-    candidates = build_candidates(document_id, pages)
-    visit_id = session.execute(
-        text("SELECT visit_id FROM documents WHERE id=:id"), {"id": document_id}
-    ).scalar_one()
+    visit_id, declared_doc_type = session.execute(
+        text("SELECT visit_id, declared_doc_type FROM documents WHERE id=:id"), {"id": document_id}
+    ).one()
+    candidates = build_candidates(document_id, pages, declared_doc_type=declared_doc_type)
     # Keep guardian decisions and their schedules across retries/reanalysis.
     cancel = """UPDATE action_items
         SET approval_status='CANCELED', cancel_reason='SOURCE_REANALYZED'

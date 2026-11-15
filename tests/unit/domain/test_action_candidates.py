@@ -11,7 +11,7 @@ from app.domain.document.page_extraction import ExtractedItem, PageExtraction
 
 def extraction(kind="SCHEDULE", value="2026-12-03T10:00", source="2026년 12월 3일 오전 10시 검사"):
     return PageExtraction(
-        document_type="DISCHARGE_GUIDE",
+        document_type="PRESCRIPTION" if kind == "MEDICATION" else "DISCHARGE_GUIDE",
         raw_text=source,
         items=[
             ExtractedItem(
@@ -53,6 +53,32 @@ def test_non_action_and_ungrounded_evidence_are_ignored():
     assert not build_candidates(uuid4(), {1: extraction("LAB_VALUE", "13.5")})
     page = extraction().model_copy(update={"raw_text": "이 문서에는 검사 일정이 없습니다."})
     assert not build_candidates(uuid4(), {1: page})
+
+
+@pytest.mark.parametrize(
+    ("declared_type", "page_type", "expected"),
+    [
+        ("MEDICAL", "PRESCRIPTION", False),
+        ("MEDICAL", "DISCHARGE_GUIDE", False),
+        ("PRESCRIPTION", "PRESCRIPTION", True),
+        ("PRESCRIPTION", "UNKNOWN", True),
+        ("PRESCRIPTION", "DISCHARGE_GUIDE", False),
+        (None, "DISCHARGE_GUIDE", False),
+        (None, "PRESCRIPTION", True),
+    ],
+)
+def test_only_prescription_context_produces_a_medication_candidate(
+    declared_type, page_type, expected
+):
+    page = extraction(
+        "MEDICATION", "하루 2회", "가상 약품을 하루 2회 복용"
+    ).model_copy(update={"document_type": page_type})
+    items = build_candidates(uuid4(), {1: page}, declared_doc_type=declared_type)
+    assert [item.type for item in items] == (["MEDICATION"] if expected else [])
+
+
+def test_general_medical_document_still_produces_a_test_schedule_candidate():
+    assert build_candidates(uuid4(), {1: extraction()}, declared_doc_type="MEDICAL")[0].type == "TEST"
 
 
 def test_document_notices_do_not_hide_a_clinical_caution():

@@ -61,9 +61,11 @@ class SqlAlchemyDocumentAnalysisRepository:
     def mark_started(self, target: AnalysisTarget, started_at: datetime) -> bool:
         """문서를 PROCESSING, 분석을 RUNNING으로 바꾸고 이전 실행의 결과 컬럼을 비운다.
 
-        분석이 이미 RUNNING 또는 SUCCEEDED면 아무것도 바꾸지 않고 False를 반환한다.
+        최신 분석만 시작하며, 이미 RUNNING 또는 SUCCEEDED인 분석은 건너뛴다.
         """
         with self._session_factory.begin() as session:
+            if not _lock_document_and_check_latest(session, target):
+                return False
             status = session.execute(
                 select(DocumentAnalysisModel.status)
                 .where(DocumentAnalysisModel.id == target.analysis_id)

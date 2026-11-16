@@ -29,6 +29,8 @@
 | 💬 근거 기반 답변 | 검색 근거를 사용해 쉬운 설명·비교·복약 요약을 생성하고 Citation을 검증합니다. |
 | 🛡️ 의료 안전 차단 | 진단, 약 변경, 치료 결정과 응급 판단 요청은 LLM 호출 전에 차단합니다. |
 | 🎁 복지 설명 | Spring 추천 엔진의 판정과 원문을 바탕으로 추천 이유를 설명합니다. |
+| 💉 예방접종 일정 | 생년월일·기준일·완료 차수를 질병관리청 일정 Data와 비교해 현재·예정·지난 접종을 계산합니다. |
+| ☁️ 저장소 전환 | 개발 환경은 Local Folder, 배포 환경은 비공개 S3에서 같은 문서 Pipeline을 실행합니다. |
 | ♻️ 재색인 | VLM을 다시 호출하지 않고 저장된 원문으로 Chunk와 Embedding을 복구합니다. |
 
 <details open>
@@ -85,13 +87,15 @@ flowchart LR
         RAG["Medical RAG"]
         ANSWER["Grounded Answer"]
         WELFARE["Welfare Explanation"]
+        VACCINE["Vaccination Schedule Engine"]
         API --> VLM --> INDEX --> RAG --> ANSWER
         API --> WELFARE
+        API --> VACCINE
     end
 
     BE -->|X-Internal-Token| API
     WELFARE -->|복지 Catalog 조회| BE
-    UPLOAD --> STORAGE[("📁 Shared Document Storage")]
+    UPLOAD --> STORAGE[("📁 Shared Storage<br/>Local · Private S3")]
     VLM --> STORAGE
     BE --> DB[("🗄️ PostgreSQL · pgvector")]
     VLM --> DB
@@ -112,7 +116,7 @@ flowchart LR
 3. AI Backend 호출에는 양쪽 서버에 동일하게 설정한 `X-Internal-Token`을 사용합니다.
 4. 의료 RAG 검색 시 Spring이 허용한 `patient_id`와 `allowed_document_ids`를 전달합니다.
 5. AI Backend는 DB 조건을 다시 적용하여 삭제되지 않고 Embedding이 준비된 문서만 검색합니다.
-6. 문서 원본과 Database는 Spring과 AI Backend가 동일한 Storage Root와 PostgreSQL을 사용합니다.
+6. 문서 원본은 Local Mode에서는 같은 Storage Root를, S3 Mode에서는 같은 비공개 Bucket과 Region을 사용합니다. Database도 같은 PostgreSQL을 사용합니다.
 
 </details>
 
@@ -298,6 +302,30 @@ flowchart LR
 </details>
 
 <details>
+<summary><b>💉 예방접종 일정 API</b></summary>
+
+| Method | Endpoint | 설명 |
+|---|---|---|
+| `POST` | `/internal/vaccinations/schedule` | 생년월일·기준일·완료 차수를 바탕으로 접종 일정 계산 |
+
+Spring은 `birthDate`, `asOf`, `completedDoses`를 보내고 AI Backend는 질병관리청 2026 일정 Data를 기준으로 `now`·`soon`·`past` 묶음, 다음 접종과 접종 개수를 반환합니다. 이 계산은 Database를 사용하지 않습니다.
+
+- `VACCINATION_001`: 생년월일이 기준일보다 늦을 때 반환합니다.
+- `VACCINATION_002`: 일정 Data에 없는 접종 차수가 포함되었을 때 반환합니다.
+- 알 수 없는 차수는 정렬·중복 제거된 `unknownDoseIds`로 함께 반환합니다.
+
+```json
+{
+  "code": "VACCINATION_002",
+  "message": "알 수 없는 접종 차수가 포함되어 있습니다.",
+  "timestamp": "2026-11-09T17:42:06.479040+00:00",
+  "unknownDoseIds": ["DTAP-9", "RV-7"]
+}
+```
+
+</details>
+
+<details>
 <summary><b>🎁 복지 AI API</b></summary>
 
 | Method | Endpoint | 설명 |
@@ -367,12 +395,13 @@ Dodam_AI_backend
 │   ├── domain
 │   │   ├── ai_result                   # 질문 분류·Safety Check
 │   │   ├── document                    # 추출·Chunk·후보 Domain Rule
+│   │   ├── vaccination                 # 예방접종 일정 Data·계산 Engine
 │   │   └── welfare                     # 복지 Context·Policy Chunk
 │   ├── infrastructure
 │   │   ├── db                          # SQLAlchemy Model·Repository
 │   │   ├── medical_rag                 # pgvector Evidence 검색
 │   │   ├── providers                   # VLM·LLM·Embedding Adapter
-│   │   ├── storage                     # Local Storage Adapter
+│   │   ├── storage                     # Local·S3 Storage Adapter
 │   │   └── welfare                     # Spring Client·복지 Embedding
 │   ├── pipelines/documents             # Page 분리·저장·추출·Chunk Step
 │   └── main.py                         # FastAPI App·Client Lifecycle
@@ -403,6 +432,7 @@ Dodam_AI_backend
 | ORM | SQLAlchemy 2 | 분석·Page·Chunk Repository |
 | Database | PostgreSQL · psycopg | 공용 서비스 Data 저장 |
 | Vector Search | pgvector | 의료·복지 Embedding 검색 |
+| Object Storage | Local File · Amazon S3 · boto3 | 원본 문서 읽기와 Rendering Page 저장 |
 | HTTP Client | httpx | Spring Backend 내부 호출 |
 
 </details>
@@ -459,20 +489,20 @@ python -m pip install -e ".[dev]"
 
 ```bash
 cp .env.example .env
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8006 --reload
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 Windows PowerShell에서는 다음과 같이 복사합니다.
 
 ```powershell
 Copy-Item .env.example .env
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8006 --reload
+uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 Health Check:
 
 ```bash
-curl http://127.0.0.1:8006/health
+curl http://127.0.0.1:8000/health
 ```
 
 ```json
@@ -506,6 +536,9 @@ python -m tests.manual_contract_server
 ```env
 DATABASE_URL=postgresql+psycopg://dodam:dodam_local@127.0.0.1:5433/dodam
 STORAGE_LOCAL_ROOT=C:/path/to/Dodam_backend/data/object-storage
+STORAGE_PROVIDER=local
+STORAGE_S3_BUCKET=
+STORAGE_S3_REGION=
 AI_INTERNAL_TOKEN=change-me
 
 SPRING_BACKEND_BASE_URL=http://localhost:8081
@@ -515,8 +548,19 @@ SPRING_BACKEND_TIMEOUT_SECONDS=10
 Spring Backend와 다음 값이 일치해야 합니다.
 
 - Database
-- `STORAGE_LOCAL_ROOT`
+- Local Mode에서는 `STORAGE_LOCAL_ROOT`
+- S3 Mode에서는 Bucket 이름과 실제 Region
 - `AI_INTERNAL_TOKEN`
+
+Local 개발은 `STORAGE_PROVIDER=local`을 사용합니다. 비공개 S3를 사용하는 배포에서는 다음처럼 설정합니다.
+
+```env
+STORAGE_PROVIDER=s3
+STORAGE_S3_BUCKET=dodam-private-documents
+STORAGE_S3_REGION=ap-northeast-2
+```
+
+S3 Bucket과 Region은 Spring의 `DODAM_STORAGE_S3_BUCKET`, `DODAM_STORAGE_S3_REGION`과 같아야 합니다. S3 Mode에서 Bucket 또는 Region이 비어 있으면 잘못된 설정으로 기동하는 대신 Server 시작 단계에서 실패합니다.
 
 </details>
 
@@ -559,7 +603,7 @@ EMBEDDING_TIMEOUT_SECONDS=30
 EMBEDDING_MAX_RETRIES=2
 EMBEDDING_RETRY_BACKOFF_SECONDS=1
 
-MEDICAL_RAG_SEARCH_LIMIT=12
+MEDICAL_RAG_SEARCH_LIMIT=3
 MEDICAL_RAG_MAX_EVIDENCE=20
 ```
 
@@ -659,6 +703,8 @@ pytest
 - 복지 설명의 점수 보존과 Hallucination Fallback
 - Internal Token, 요청 검증과 공통 Error 응답
 - Database Repository와 Storage Path 탈출 방지
+- Local·S3 Storage의 원본 읽기와 Rendering Page 저장
+- 예방접종 일정 묶음, 다음 접종과 알 수 없는 차수 Error 응답
 
 </details>
 

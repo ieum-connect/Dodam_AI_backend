@@ -3,6 +3,7 @@
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import sessionmaker
 
 from app.contracts.ai_result_document import AnswerSentence, GeneratedAnswer
 from app.core.config import get_settings
@@ -16,7 +17,8 @@ def test_llm_client_is_reused_and_closed(monkeypatch) -> None:
     instances = []
 
     class FakeClient:
-        def __init__(self, settings) -> None:
+        def __init__(self, settings, *, use_embedding_api_key: bool = False) -> None:
+            self.use_embedding_api_key = use_embedding_api_key
             self.closed = False
             self.calls = 0
             instances.append(self)
@@ -35,6 +37,7 @@ def test_llm_client_is_reused_and_closed(monkeypatch) -> None:
     citation_id = uuid4()
     monkeypatch.setattr("app.main.OpenAiCompatibleLlmClient", FakeClient)
     monkeypatch.setattr("app.main.get_settings", _settings)
+    monkeypatch.setattr("app.main.get_session_factory", sessionmaker)
     app.dependency_overrides[get_settings] = _settings
     try:
         with TestClient(app) as client:
@@ -48,6 +51,7 @@ def test_llm_client_is_reused_and_closed(monkeypatch) -> None:
                 assert response.json()["result_status"] == "COMPLETE"
             assert len(instances) == 1
             assert instances[0].calls == 2
+            assert instances[0].use_embedding_api_key is True
             assert instances[0].closed is False
     finally:
         app.dependency_overrides.clear()

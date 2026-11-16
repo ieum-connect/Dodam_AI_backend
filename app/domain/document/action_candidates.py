@@ -7,7 +7,7 @@ from datetime import datetime
 from uuid import UUID, uuid5
 from zoneinfo import ZoneInfo
 
-from app.domain.document.page_extraction import ExtractedItemType, PageExtraction
+from app.domain.document.page_extraction import DocumentType, ExtractedItemType, PageExtraction
 
 # Narrow fallback for document-only notices that may still be labeled as cautions.
 _DOCUMENT_NOTICE = re.compile(
@@ -70,17 +70,27 @@ def _explicit_datetime(value: str | None, source: str) -> datetime | None:
 
 
 def build_candidates(
-    document_id: UUID, pages: Mapping[int, PageExtraction]
+    document_id: UUID,
+    pages: Mapping[int, PageExtraction],
+    *,
+    declared_doc_type: str | None = None,
 ) -> list[ActionCandidate]:
-    """Only document-grounded schedules, medication and cautions become candidates."""
+    """Require prescription context for medication and original text for every candidate."""
     candidates: dict[UUID, ActionCandidate] = {}
     for page_no, extraction in sorted(pages.items()):
+        prescription_page = extraction.document_type == DocumentType.PRESCRIPTION
+        if declared_doc_type == "PRESCRIPTION":
+            prescription_page = prescription_page or extraction.document_type == DocumentType.UNKNOWN
+        elif declared_doc_type not in (None, "UNKNOWN"):
+            prescription_page = False
         for item in extraction.items:
             if item.item_type not in {
                 ExtractedItemType.SCHEDULE,
                 ExtractedItemType.MEDICATION,
                 ExtractedItemType.CAUTION,
             }:
+                continue
+            if item.item_type == ExtractedItemType.MEDICATION and not prescription_page:
                 continue
             # Reject hallucinated evidence. Whitespace may differ between OCR and items.
             source = "".join(item.source_text.split())

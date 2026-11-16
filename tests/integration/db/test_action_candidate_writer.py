@@ -4,6 +4,24 @@ from app.infrastructure.db.repositories.action_candidate_writer import save_cand
 from tests.unit.domain.test_action_candidates import extraction
 
 
+def test_saves_medication_candidates_only_when_database_selection_permits(db_session, document_id):
+    page = extraction("MEDICATION", "하루 2회", "가상 약품을 하루 2회 복용")
+    set_kind = text("UPDATE documents SET declared_doc_type=:kind WHERE id=:id")
+    status = text("SELECT approval_status FROM action_items WHERE document_id=:id")
+    params = {"id": document_id}
+    db_session.execute(set_kind, {**params, "kind": "MEDICAL"})
+    save_candidates(db_session, document_id, {1: page})
+    assert db_session.execute(status, params).scalar_one_or_none() is None
+
+    db_session.execute(set_kind, {**params, "kind": "PRESCRIPTION"})
+    save_candidates(db_session, document_id, {1: page})
+    assert db_session.execute(status, params).scalar_one() == "PENDING"
+
+    db_session.execute(set_kind, {**params, "kind": "MEDICAL"})
+    save_candidates(db_session, document_id, {1: page})
+    assert db_session.execute(status, params).scalar_one() == "CANCELED"
+
+
 def test_retry_preserves_guardian_decision_and_does_not_create_schedules(db_session, document_id):
     page = extraction()
     for _ in range(2):

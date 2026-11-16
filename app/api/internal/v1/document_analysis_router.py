@@ -24,6 +24,7 @@ from app.infrastructure.db.session import get_session_factory
 from app.infrastructure.providers.embedding import create_text_embedder
 from app.infrastructure.providers.llm.openai_page_extractor import create_page_extractor
 from app.infrastructure.storage.local_document_storage import LocalDocumentStorage
+from app.infrastructure.storage.s3_document_storage import S3DocumentStorage
 
 router = APIRouter(prefix="/internal/documents", tags=["Document analysis"])
 logger = logging.getLogger(__name__)
@@ -40,7 +41,11 @@ class AnalyzeRequest(BaseModel):
 def run_analysis(document_id: UUID) -> None:
     settings = get_settings()
     try:
-        storage = LocalDocumentStorage(settings.storage_local_root)
+        storage = (
+            S3DocumentStorage(settings.storage_s3_bucket, settings.storage_s3_region)
+            if settings.storage_provider == "s3"
+            else LocalDocumentStorage(settings.storage_local_root)
+        )
         factory = get_session_factory()
         repository = SqlAlchemyDocumentAnalysisRepository(factory)
         with ExitStack() as resources:

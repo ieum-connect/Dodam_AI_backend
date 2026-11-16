@@ -464,6 +464,15 @@ def start_newer_analysis(
     return newer
 
 
+def test_older_pending_analysis_cannot_start_after_reanalysis(
+    db_session: Session, repository: SqlAlchemyDocumentAnalysisRepository, target: AnalysisTarget
+) -> None:
+    newer = start_newer_analysis(db_session, repository, target)
+    assert repository.mark_started(target, STARTED_AT) is False
+    assert fetch_analysis(db_session, target.analysis_id).status == AnalysisStatus.PENDING
+    assert fetch_analysis(db_session, newer.analysis_id).status == AnalysisStatus.RUNNING
+
+
 def test_late_older_result_does_not_overwrite_newer_page_text(
     db_session: Session,
     session_factory: sessionmaker[Session],

@@ -3,6 +3,7 @@
 from uuid import uuid4
 
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import sessionmaker
 
 from app.contracts.ai_result_document import AnswerSentence, GeneratedAnswer
 from app.core.config import get_settings
@@ -36,6 +37,7 @@ def test_llm_client_is_reused_and_closed(monkeypatch) -> None:
     citation_id = uuid4()
     monkeypatch.setattr("app.main.OpenAiCompatibleLlmClient", FakeClient)
     monkeypatch.setattr("app.main.get_settings", _settings)
+    monkeypatch.setattr("app.main.get_session_factory", sessionmaker)
     app.dependency_overrides[get_settings] = _settings
     try:
         with TestClient(app) as client:

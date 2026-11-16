@@ -14,7 +14,10 @@ class Settings(BaseSettings):
 
     database_url: str
     ai_internal_token: SecretStr = Field(min_length=1)
-    storage_local_root: str = Field(min_length=1)
+    storage_local_root: str = Field(default="./data/object-storage", min_length=1)
+    storage_provider: Literal["local", "s3"] = "local"
+    storage_s3_bucket: str = ""
+    storage_s3_region: str = "ap-southeast-2"
     llm_provider: str = "openai"
     # 결과 문서 작업이 아닌 VLM 파이프라인도 이 설정을 사용하므로, 실제 호출 시점에만 키를 검증한다.
     llm_api_key: SecretStr | None = None

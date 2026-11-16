@@ -134,7 +134,14 @@ def compute_schedule(
                 "delayFrom": delay_from.isoformat(),
             }
             doses_by_state[state].append(item)
-            vaccine_doses.append({"doseId": dose_id, "label": item["label"], "state": state})
+            vaccine_doses.append(
+                {
+                    "doseId": dose_id,
+                    "label": item["label"],
+                    "state": state,
+                    "recFrom": item["recFrom"],
+                }
+            )
         if vaccine_doses:
             vaccines.append(
                 {"vaccineId": vaccine["id"], "name": vaccine["name"], "doses": vaccine_doses}

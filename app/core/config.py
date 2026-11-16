@@ -1,23 +1,25 @@
 """환경 변수와 .env 파일에서 서버 설정을 읽는다."""
 
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """환경 변수와 .env 파일에서 읽는 서버 설정."""
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore", hide_input_in_errors=True
+    )
 
     database_url: str
     ai_internal_token: SecretStr = Field(min_length=1)
     storage_local_root: str = Field(default="./data/object-storage", min_length=1)
     storage_provider: Literal["local", "s3"] = "local"
     storage_s3_bucket: str = ""
-    storage_s3_region: str = "ap-southeast-2"
+    storage_s3_region: str = ""
     llm_provider: str = "openai"
     # 결과 문서 작업이 아닌 VLM 파이프라인도 이 설정을 사용하므로, 실제 호출 시점에만 키를 검증한다.
     llm_api_key: SecretStr | None = None
@@ -61,6 +63,21 @@ class Settings(BaseSettings):
         return value
     spring_backend_base_url: str = Field(default="http://localhost:8081", min_length=1)
     spring_backend_timeout_seconds: float = Field(default=10, gt=0, le=60)
+
+    @field_validator("storage_s3_bucket", "storage_s3_region")
+    @classmethod
+    def _strip_s3_settings(cls, value: str) -> str:
+        return value.strip()
+
+    @model_validator(mode="after")
+    def _validate_s3_settings(self) -> Self:
+        if self.storage_provider != "s3":
+            return self
+        if not self.storage_s3_bucket:
+            raise ValueError("STORAGE_S3_BUCKET is required when STORAGE_PROVIDER=s3")
+        if not self.storage_s3_region:
+            raise ValueError("STORAGE_S3_REGION is required when STORAGE_PROVIDER=s3")
+        return self
 
 
 @lru_cache

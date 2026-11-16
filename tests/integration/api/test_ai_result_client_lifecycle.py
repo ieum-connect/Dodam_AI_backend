@@ -16,7 +16,8 @@ def test_llm_client_is_reused_and_closed(monkeypatch) -> None:
     instances = []
 
     class FakeClient:
-        def __init__(self, settings) -> None:
+        def __init__(self, settings, *, use_embedding_api_key: bool = False) -> None:
+            self.use_embedding_api_key = use_embedding_api_key
             self.closed = False
             self.calls = 0
             instances.append(self)
@@ -48,6 +49,7 @@ def test_llm_client_is_reused_and_closed(monkeypatch) -> None:
                 assert response.json()["result_status"] == "COMPLETE"
             assert len(instances) == 1
             assert instances[0].calls == 2
+            assert instances[0].use_embedding_api_key is True
             assert instances[0].closed is False
     finally:
         app.dependency_overrides.clear()

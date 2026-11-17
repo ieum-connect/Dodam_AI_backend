@@ -284,7 +284,214 @@ flowchart LR
 
 ---
 
-## 5. 🔌 내부 API
+## 5. 🤝 개발 컨벤션
+
+Frontend·Spring Backend와 같은 Git 흐름을 사용합니다. AI Backend 변경은 Model·Prompt·Embedding·Database·Storage와 의료 안전 정책에 미치는 영향을 PR에서 명확히 설명해야 합니다.
+
+```mermaid
+flowchart LR
+    ISSUE["📌 Issue"] --> SYNC["🔄 develop 최신화"] --> BRANCH["🌿 작업 Branch"]
+    BRANCH --> CODE["💻 구현"] --> VERIFY["✅ Test · Lint"]
+    VERIFY --> COMMIT["📝 Commit"] --> PR["🔍 Pull Request"]
+    PR --> REVIEW["👀 Review · CI"] --> MERGE["🎉 Squash Merge"]
+```
+
+<details open>
+<summary><b>🌿 1. Branch Convention</b></summary>
+
+[Branch Convention 전체 문서](https://github.com/ieum-connect/Dodam_backend/blob/develop/docs/convention/BRANCH_CONVENTION.md)
+
+```text
+main                         # 배포 가능한 안정 Branch
+ └─ develop                  # 기능 통합·검증 Branch
+     ├─ feat/12-short-name   # 새 기능
+     ├─ fix/18-short-name    # Bug 수정
+     ├─ refactor/23-name     # 구조 개선
+     ├─ docs/25-name         # 문서
+     ├─ test/29-name         # Test
+     └─ chore/31-name        # 설정·의존성·Data 정리
+
+hotfix/35-short-name         # main 기준 긴급 운영 수정
+ ├─ main 반영
+ └─ develop에도 동일 변경 반영
+```
+
+| Type | 사용 시점 | 예시 |
+|---|---|---|
+| `feat` | AI Pipeline·내부 API 추가 | `feat/12-document-action-candidates` |
+| `fix` | 추출·RAG·안전 정책 오류 수정 | `fix/18-chat-structured-response` |
+| `refactor` | 동작 변화 없는 구조 개선 | `refactor/23-document-pipeline` |
+| `docs` | README·명세·문서 수정 | `docs/25-readme-refresh` |
+| `test` | Evaluation·Fixture·회귀 Test 추가 | `test/29-rag-citation` |
+| `chore` | Model 설정·의존성·Data 정리 | `chore/31-model-config` |
+
+- 형식은 `<type>/<issue-number>-<short-kebab-case-description>`입니다.
+- 최신 `develop`에서 분기하고 한 Branch에는 하나의 Issue와 하나의 목적만 담습니다.
+- `main`과 `develop`에는 직접 Push하지 않습니다.
+- Prompt·Model·Embedding 변경은 별도 Branch로 분리해 평가 결과를 비교할 수 있게 합니다.
+</details>
+
+<details open>
+<summary><b>📝 2. Commit Convention</b></summary>
+
+[Commit Convention 전체 문서](https://github.com/ieum-connect/Dodam_backend/blob/develop/docs/convention/COMMIT_CONVENTION.md)
+
+```text
+<type>(<scope>): <english subject>
+
+<선택: 변경 이유와 구현 방식>
+<선택: Refs: #issue-number>
+```
+
+```text
+feat(document): extract medication action candidates
+fix(chat): reject unsupported clinical advice
+docs(readme): document ai backend architecture
+test(rag): cover citation scope filtering
+```
+
+- Type·Scope·Subject는 소문자 영어로 쓰고 제목 끝에 마침표를 붙이지 않습니다.
+- Subject는 명령형 현재 시제로 작성하고 하나의 Commit에는 하나의 논리적 변경만 담습니다.
+- Prompt·Schema·Service·Test처럼 함께 변경되어야 하는 파일은 하나의 완결된 Commit으로 묶습니다.
+- 권장 Scope: `document`, `rag`, `chat`, `welfare`, `vaccination`, `embedding`, `storage`, `model`, `safety`, `api`, `migration`, `readme`.
+</details>
+
+<details open>
+<summary><b>🔀 3. Pull Request Convention</b></summary>
+
+[PR Convention 전체 문서](https://github.com/ieum-connect/Dodam_backend/blob/develop/docs/convention/PR_CONVENTION.md)
+
+```text
+PR 제목: <type>(<scope>): <한국어 변경 내용>
+예시: fix(rag): 허용 문서 범위 밖 Citation 차단
+```
+
+| 필수 항목 | 작성 내용 |
+|---|---|
+| 무엇을 구현했나요? | 사용자 또는 시스템 관점의 변경 사항 |
+| 참고할 사항 | Model·Prompt·API·DB·Storage·환경 변수 영향 |
+| 테스트 | 실행 명령, 자동·수동 결과, Evaluation 비교 |
+| 안전성 | Grounding·Citation·PHI·의료 조언 차단 영향 |
+| 연결된 이슈 | `Closes #이슈번호` |
+
+- 대상 Branch는 원칙적으로 `develop`이며 Draft PR로 조기 공유할 수 있습니다.
+- CI 통과와 1명 이상 Approve 후 Squash and merge하고 작업 Branch를 삭제합니다.
+- 내부 API 응답 변경은 Spring Backend 영향과 하위 호환성을 명시합니다.
+- Model·Prompt 변경은 대표 입력, 변경 전·후 결과와 실패 사례를 함께 첨부합니다.
+</details>
+
+<details>
+<summary><b>🧩 4. Issue · Pull Request Templates</b></summary>
+
+| Template | 사용 시점 | 바로가기 |
+|---|---|---|
+| 기능 Issue | 신규 Pipeline·내부 API·고도화 작업 | [기능 이슈 템플릿](./.github/ISSUE_TEMPLATE/기능-이슈-템플릿.md) |
+| Bug Issue | 추출·RAG·Model·운영 오류 보고 | [버그 이슈 템플릿](./.github/ISSUE_TEMPLATE/버그-이슈-템플릿.md) |
+| Pull Request | 구현 완료 후 Review 요청 | [AI Backend PR 템플릿](./.github/PULL_REQUEST_TEMPLATE.md) |
+
+<details>
+<summary><b>📌 기능 Issue 작성 골격</b></summary>
+
+```markdown
+## 🏷️ 기능 분류
+- 대분류 / 중분류 / 소분류 / 관련 기능 코드
+
+## 🎯 개발 목적 (Why)
+## 📌 구현 기능 요약 (What)
+## 📋 상세 요구사항 (Requirements)
+## 📂 작업 대상 Module · Service와 역할
+## 🔌 Internal API · Schema 규격
+## 🤖 Model · Prompt · Embedding 영향
+## 🛠️ 세부 구현 체크리스트
+## 🏁 완료 조건 (Definition of Done)
+## 🧪 Test · Evaluation 진행 상황
+## 📎 Sample 문서·근거·참고 자료
+```
+
+</details>
+
+<details>
+<summary><b>🐛 Bug Issue 작성 골격</b></summary>
+
+```markdown
+## 🏷️ 관련 기능 코드 · 실행 환경 · 우선순위
+## 🚨 발생 상황
+## 🔁 재현 방법 (Steps to Reproduce)
+## 📈 기대 동작 / 📉 실제 동작
+## 🛠️ 수정 범위 및 원인 추정
+## 🏁 완료 조건 (Definition of Done)
+## 📎 Trace ID · 안전하게 Masking한 Log · Sample 입력
+```
+
+</details>
+
+<details>
+<summary><b>🔀 Pull Request 작성 골격</b></summary>
+
+```markdown
+## 무엇을 구현했나요?
+- 사용자 또는 시스템 관점의 변경 사항
+
+## 참고할 사항
+- Model·Prompt·API·DB·Storage·환경 변수 영향
+
+## 테스트
+- 실행한 명령어와 자동 Test 결과
+- Evaluation·수동 검증 결과
+- 확인하지 못한 항목과 사유
+
+## 연결된 이슈
+- Closes #이슈번호
+
+## Definition of Done
+- [ ] 요구사항과 Issue 완료 조건을 충족했다
+- [ ] 관련 Test와 Lint가 통과했다
+- [ ] Grounding·Citation·의료 안전 정책을 확인했다
+- [ ] PHI·Secret·문서 원문이 Log에 노출되지 않는다
+- [ ] Spring Backend 호환성과 배포 영향을 확인했다
+- [ ] 최소 1명의 Review 승인을 받았다
+```
+
+</details>
+
+</details>
+
+<details>
+<summary><b>🤖 5. AI Backend Code Style</b></summary>
+
+| 영역 | 규칙 |
+|---|---|
+| Module | Document·RAG·Chat·Welfare·Vaccination 책임을 분리합니다. |
+| API | FastAPI Router는 요청 변환과 검증만 담당하고 Business Logic을 Service로 위임합니다. |
+| Schema | Pydantic Model로 입력·출력 계약을 명시하고 임의 `dict` 반환을 피합니다. |
+| Pipeline | 추출·정규화·검증·저장을 단계별로 나누고 각 단계 실패 상태를 보존합니다. |
+| Prompt | 역할·입력·출력 Schema·금지 규칙을 명시하고 Version 변경을 추적합니다. |
+| Grounding | 허용 Document 범위 안의 Evidence와 Citation이 없는 생성 내용을 반환하지 않습니다. |
+| Storage | DB의 Object Key만 신뢰하며 경로 탈출과 임의 URL 접근을 차단합니다. |
+| Log | PHI·문서 원문·API Key·Token·실제 Storage 경로를 기록하지 않습니다. |
+
+- 외부 Model 호출은 Timeout·Retry·Rate Limit·Fallback과 비용을 함께 고려합니다.
+- 비결정적 결과는 고정 Fixture와 허용 범위를 사용해 회귀 Test를 작성합니다.
+- 의료 판단을 생성하지 않고 응급 신호·진단·약 변경 요청은 안전 안내로 전환합니다.
+- 주석은 코드의 동작보다 제약, 안전 정책과 설계 결정 이유를 설명할 때 작성합니다.
+</details>
+
+<details>
+<summary><b>✅ 6. 리뷰 전 체크리스트</b></summary>
+
+- [ ] 최신 `develop`을 반영했고 불필요한 변경 파일이 없습니다.
+- [ ] 관련 Test·Lint·Type Check가 통과합니다.
+- [ ] Internal Token과 허용 Document 범위 검증을 확인했습니다.
+- [ ] Citation·Grounding·의료 조언 차단과 Fallback을 확인했습니다.
+- [ ] Model·Prompt 변경 전·후 결과와 대표 실패 사례를 비교했습니다.
+- [ ] PHI·Secret·Credential·문서 원문이 Commit이나 Log에 포함되지 않았습니다.
+- [ ] DB·Storage·Embedding 재생성 및 운영 복구 영향을 검토했습니다.
+- [ ] Spring Backend·Frontend·Infra 영향과 배포 순서를 PR에 기록했습니다.
+</details>
+
+---
+
+## 6. 🔌 내부 API
 
 > `/health`와 복지 준비 상태를 제외한 기능 API는 Spring Backend의 내부 호출을 전제로 합니다.
 
@@ -361,7 +568,7 @@ Spring은 `birthDate`, `asOf`, `completedDoses`를 보내고 AI Backend는 질�
 
 ---
 
-## 6. 🧱 Code Architecture
+## 7. 🧱 Code Architecture
 
 ```mermaid
 flowchart TD
@@ -419,7 +626,7 @@ Dodam_AI_backend
 
 ---
 
-## 7. 🛠️ 기술 스택
+## 8. 🛠️ 기술 스택
 
 <details open>
 <summary><b>⚙️ Application · Data</b></summary>
@@ -464,7 +671,7 @@ Dodam_AI_backend
 
 ---
 
-## 8. 🚀 Local 실행
+## 9. 🚀 Local 실행
 
 <details open>
 <summary><b>📦 설치</b></summary>
@@ -528,7 +735,7 @@ python -m tests.manual_contract_server
 
 ---
 
-## 9. 🔐 환경 변수
+## 10. 🔐 환경 변수
 
 <details open>
 <summary><b>🗄️ Database · Storage · 내부 통신</b></summary>
@@ -624,7 +831,7 @@ DOCUMENT_MAX_PAGE_SIDE_PX=2048
 
 ---
 
-## 10. ♻️ 재색인과 운영 복구
+## 11. ♻️ 재색인과 운영 복구
 
 <details open>
 <summary><b>🔁 문서 하나 재색인</b></summary>
@@ -668,7 +875,7 @@ python -m scripts.reindex_documents --missing
 
 ---
 
-## 11. ✅ Test와 검증
+## 12. ✅ Test와 검증
 
 <details open>
 <summary><b>🧪 실행 명령어</b></summary>
@@ -707,26 +914,6 @@ pytest
 - 예방접종 일정 묶음, 다음 접종과 알 수 없는 차수 Error 응답
 
 </details>
-
----
-
-## 12. 🤝 개발 컨벤션
-
-<details>
-<summary><b>📚 공통 컨벤션 문서</b></summary>
-
-- [브랜치 컨벤션](https://github.com/ieum-connect/Dodam_backend/blob/develop/docs/convention/BRANCH_CONVENTION.md)
-- [커밋 컨벤션](https://github.com/ieum-connect/Dodam_backend/blob/develop/docs/convention/COMMIT_CONVENTION.md)
-- [PR 컨벤션](https://github.com/ieum-connect/Dodam_backend/blob/develop/docs/convention/PR_CONVENTION.md)
-
-</details>
-
-```mermaid
-flowchart LR
-    ISSUE["📌 Issue"] --> BRANCH["🌿 Branch"] --> DEVELOP["💻 Develop"]
-    DEVELOP --> TEST["✅ Test"] --> COMMIT["📝 Commit"]
-    COMMIT --> PR["🔍 Pull Request"] --> REVIEW["👀 Code Review"] --> MERGE["🎉 Merge"]
-```
 
 ---
 

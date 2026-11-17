@@ -13,6 +13,8 @@ from app.domain.ai_result.question_classifier import QuestionClassifier
         ("도담아 이 기록을 알려줘", QuestionType.DOCUMENT_EASY_EXPLANATION),
         ("다음 예방접종 일정이 언제야?", QuestionType.FOLLOW_UP_SCHEDULE),
         ("처방받은 약을 요약해줘", QuestionType.MEDICATION_SUMMARY),
+        ("다음 진료 때 의사에게 물어볼 질문을 정리해줘", QuestionType.VISIT_CHECKLIST),
+        ("진료 질문을 정리해줘", QuestionType.VISIT_CHECKLIST),
     ],
 )
 def test_classifies_common_parent_questions(question: str, expected: QuestionType) -> None:

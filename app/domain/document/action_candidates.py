@@ -26,6 +26,24 @@ class ActionCandidate:
     due_at: datetime | None
 
 
+def _grounded_medication_evidence(source_text: str, raw_text: str) -> bool:
+    """Accept separated verbatim lines in page order, not arbitrary word fragments."""
+    raw = "".join(raw_text.split())
+    source = "".join(source_text.split())
+    if source and source in raw:
+        return True
+    lines = ["".join(line.split()) for line in source_text.splitlines() if line.strip()]
+    if len(lines) < 2 or any(len(line) < 8 for line in lines):
+        return False
+    cursor = 0
+    for line in lines:
+        position = raw.find(line, cursor)
+        if position < 0:
+            return False
+        cursor = position + len(line)
+    return True
+
+
 def _explicit_datetime(value: str | None, source: str) -> datetime | None:
     # Date-only and relative dates deliberately require guardian input.
     if not value or not re.fullmatch(
@@ -80,7 +98,9 @@ def build_candidates(
     for page_no, extraction in sorted(pages.items()):
         prescription_page = extraction.document_type == DocumentType.PRESCRIPTION
         if declared_doc_type == "PRESCRIPTION":
-            prescription_page = prescription_page or extraction.document_type == DocumentType.UNKNOWN
+            prescription_page = (
+                prescription_page or extraction.document_type == DocumentType.UNKNOWN
+            )
         elif declared_doc_type not in (None, "UNKNOWN"):
             prescription_page = False
         for item in extraction.items:
@@ -94,7 +114,10 @@ def build_candidates(
                 continue
             # Reject hallucinated evidence. Whitespace may differ between OCR and items.
             source = "".join(item.source_text.split())
-            if not source or source not in "".join(extraction.raw_text.split()):
+            grounded = bool(source) and source in "".join(extraction.raw_text.split())
+            if item.item_type == ExtractedItemType.MEDICATION:
+                grounded = _grounded_medication_evidence(item.source_text, extraction.raw_text)
+            if not grounded:
                 continue
             if item.item_type == ExtractedItemType.CAUTION and _DOCUMENT_NOTICE.fullmatch(source):
                 continue

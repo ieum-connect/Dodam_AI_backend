@@ -67,6 +67,16 @@ def test_medication_table_row_and_separate_period_are_grounded_in_order():
     assert rows[0].due_at is None
 
 
+@pytest.mark.parametrize("interruption", ["", "\n2 다른 약품 2 mL\n"])
+def test_wrapped_time_requires_contiguous_medication_evidence(interruption):
+    row = "1 약품 A 시럽 5 mL 3 회 식후 30분\n저녁 복용 시각\n"
+    guidance = "· 투약 기간 2026년 11월 15일 ~ 17일"
+    page = extraction("MEDICATION", None, row + "18:30\n" + guidance).model_copy(
+        update={"raw_text": row + interruption + "18:30\n일정 확인\n" + guidance}
+    )
+    assert bool(build_candidates(uuid4(), {1: page})) is (not interruption)
+
+
 @pytest.mark.parametrize(("dose", "expected"), [("5 mL", True), ("9 mL", False), ("2 mL", False)])
 def test_medication_columns_must_all_belong_to_the_same_numbered_row(dose, expected):
     source = f"1 약품 A 시럽 100mg/5mL\n소염 · 진통제 (내복)\n{dose}\n3 회\n식후 30분"

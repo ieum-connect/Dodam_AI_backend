@@ -66,14 +66,22 @@ def _grounded_medication_evidence(source_text: str, raw_text: str) -> bool:
     if _grounded_table_row(source_lines, raw_text):
         return True
     lines = ["".join(line.split()) for line in source_lines]
-    if len(lines) < 2 or any(len(line) < 8 for line in lines):
+    if len(lines) < 2:
         return False
     cursor = 0
-    for line in lines:
-        position = raw.find(line, cursor)
-        if position < 0:
+    index = 0
+    while index < len(lines):
+        passage = lines[index]
+        index += 1
+        # A wrapped time or dose can be short if it belongs to the same
+        # verbatim passage. Never match a short fragment on its own.
+        while index < len(lines) and raw.find(passage + lines[index], cursor) >= 0:
+            passage += lines[index]
+            index += 1
+        position = raw.find(passage, cursor)
+        if len(passage) < 8 or position < 0:
             return False
-        cursor = position + len(line)
+        cursor = position + len(passage)
     return True
 
 

@@ -15,6 +15,8 @@ _DOCUMENT_NOTICE = re.compile(
     r"|(?:AI모델응답을대체한)?(?:연동|통합)?테스트(?:용으로|에)만사용합니다)[.!。]?",
     re.IGNORECASE,
 )
+_NUMBERED_ROW = re.compile(r"^\s*[1-9]\d*[.)]?\s+[^\W\d_]")
+_ROW_END = re.compile(r"^\s*(?:[·•↳]|[-*]\s)")
 
 
 @dataclass(frozen=True)
@@ -26,13 +28,44 @@ class ActionCandidate:
     due_at: datetime | None
 
 
+def _grounded_table_row(source_lines: list[str], raw_text: str) -> bool:
+    """Verify column-ordered cells against one uniquely anchored prescription row."""
+    if len(source_lines) < 2 or not _NUMBERED_ROW.match(source_lines[0]):
+        return False
+    anchor = " ".join(source_lines[0].split())
+    raw_lines = [" ".join(line.split()) for line in raw_text.splitlines()]
+    starts = [
+        i for i, line in enumerate(raw_lines)
+        if line == anchor or line.startswith(anchor + " ")
+    ]
+    if len(starts) != 1:
+        return False
+    start = starts[0]
+    cells = [raw_lines[start][len(anchor):]]
+    for line in raw_lines[start + 1:]:
+        if not line or _NUMBERED_ROW.match(line) or _ROW_END.match(line):
+            break
+        cells.append(line)
+    row = " ".join(cells)
+    for line in source_lines[1:]:
+        cell = " ".join(line.split())
+        match = re.search(r"(?<![\w.])" + re.escape(cell) + r"(?![\w.])", row)
+        if match is None:
+            return False
+        row = row[:match.start()] + "\n" + row[match.end():]
+    return True
+
+
 def _grounded_medication_evidence(source_text: str, raw_text: str) -> bool:
-    """Accept separated verbatim lines in page order, not arbitrary word fragments."""
+    """Verify a verbatim passage, a numbered table row, or separated lines in page order."""
     raw = "".join(raw_text.split())
     source = "".join(source_text.split())
     if source and source in raw:
         return True
-    lines = ["".join(line.split()) for line in source_text.splitlines() if line.strip()]
+    source_lines = [line for line in source_text.splitlines() if line.strip()]
+    if _grounded_table_row(source_lines, raw_text):
+        return True
+    lines = ["".join(line.split()) for line in source_lines]
     if len(lines) < 2 or any(len(line) < 8 for line in lines):
         return False
     cursor = 0

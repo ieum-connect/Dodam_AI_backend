@@ -67,6 +67,19 @@ def test_medication_table_row_and_separate_period_are_grounded_in_order():
     assert rows[0].due_at is None
 
 
+@pytest.mark.parametrize(("dose", "expected"), [("5 mL", True), ("9 mL", False), ("2 mL", False)])
+def test_medication_columns_must_all_belong_to_the_same_numbered_row(dose, expected):
+    source = f"1 약품 A 시럽 100mg/5mL\n소염 · 진통제 (내복)\n{dose}\n3 회\n식후 30분"
+    raw = (
+        "1 약품 A 시럽 100mg/5mL 5 mL 3 회 식후 30분\n"
+        "소염 · 진통제 (내복) 아침 08:00\n"
+        "2 약품 B 9 mL 2 회\n"
+        "· 보충 안내: 2 mL"
+    )
+    page = extraction("MEDICATION", None, source).model_copy(update={"raw_text": raw})
+    assert bool(build_candidates(uuid4(), {1: page})) is expected
+
+
 @pytest.mark.parametrize("source", [
     "약품 A 시럽 5mL 하루 3회\n원문에 없는 복용 지시입니다",
     "투약 기간 2026년 11월 15일\n약품 A 시럽 5mL 하루 3회",

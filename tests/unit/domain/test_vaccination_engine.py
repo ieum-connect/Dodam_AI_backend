@@ -4,7 +4,13 @@ from datetime import date
 
 import pytest
 
-from app.domain.vaccination.engine import add_age, add_months, age_months, compute_schedule
+from app.domain.vaccination.engine import (
+    DONE,
+    add_age,
+    add_months,
+    age_months,
+    compute_schedule,
+)
 from app.domain.vaccination.error import VaccinationError, VaccinationErrorCode
 from app.domain.vaccination.schedule_data import load_schedule
 
@@ -179,3 +185,11 @@ def test_next_falls_back_to_soon_then_later() -> None:
 
 def test_schedule_version_comes_from_data_file() -> None:
     assert _compute(date(2026, 11, 8))["scheduleVersion"] == load_schedule()["version"]
+
+
+def test_done_dose_in_vaccines_has_rec_from() -> None:
+    result = _compute(BIRTH, ["DTAP-1"])
+    dtap = next(v for v in result["vaccines"] if v["vaccineId"] == "DTAP")
+    dose = next(d for d in dtap["doses"] if d["doseId"] == "DTAP-1")
+    assert dose["state"] == DONE
+    assert dose["recFrom"] == add_age(BIRTH, "2m").isoformat()

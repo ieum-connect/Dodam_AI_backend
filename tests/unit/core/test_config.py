@@ -36,3 +36,31 @@ def test_embedding_dimensions_default_matches_db_column() -> None:
     """설정 기본값과 embeddings.embedding 컬럼 차원이 따로 놀지 않게 묶는다."""
     assert Settings.model_fields["embedding_dimensions"].default == EMBEDDING_DIMENSIONS
     assert make_settings().embedding_dimensions == EMBEDDING_DIMENSIONS
+
+
+def test_local_storage_does_not_require_s3_settings() -> None:
+    settings = make_settings()
+    assert settings.storage_provider == "local"
+    assert settings.storage_s3_bucket == settings.storage_s3_region == ""
+
+
+@pytest.mark.parametrize(
+    ("values", "setting"),
+    [
+        ({"storage_s3_region": "ap-northeast-2"}, "STORAGE_S3_BUCKET"),
+        ({"storage_s3_bucket": " ", "storage_s3_region": "ap-northeast-2"}, "STORAGE_S3_BUCKET"),
+        ({"storage_s3_bucket": "dodam-private"}, "STORAGE_S3_REGION"),
+        ({"storage_s3_bucket": "dodam-private", "storage_s3_region": " "}, "STORAGE_S3_REGION"),
+    ],
+)
+def test_s3_storage_rejects_missing_or_blank_settings(values: dict[str, str], setting: str) -> None:
+    with pytest.raises(ValidationError, match=setting):
+        make_settings(storage_provider="s3", **values)
+
+
+def test_s3_storage_uses_explicit_bucket_and_region() -> None:
+    settings = make_settings(
+        storage_provider="s3", storage_s3_bucket=" dodam-private ", storage_s3_region=" ap-northeast-2 "
+    )
+    assert settings.storage_s3_bucket == "dodam-private"
+    assert settings.storage_s3_region == "ap-northeast-2"

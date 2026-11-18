@@ -11,7 +11,7 @@ from app.domain.document.page_extraction import ExtractedItem, PageExtraction
 
 def extraction(kind="SCHEDULE", value="2026-12-03T10:00", source="2026년 12월 3일 오전 10시 검사"):
     return PageExtraction(
-        document_type="DISCHARGE_GUIDE",
+        document_type="PRESCRIPTION" if kind == "MEDICATION" else "DISCHARGE_GUIDE",
         raw_text=source,
         items=[
             ExtractedItem(
@@ -53,6 +53,80 @@ def test_non_action_and_ungrounded_evidence_are_ignored():
     assert not build_candidates(uuid4(), {1: extraction("LAB_VALUE", "13.5")})
     page = extraction().model_copy(update={"raw_text": "이 문서에는 검사 일정이 없습니다."})
     assert not build_candidates(uuid4(), {1: page})
+
+
+def test_medication_table_row_and_separate_period_are_grounded_in_order():
+    row = "약품 A 시럽 5mL 하루 3회 식후 30분"
+    period = "투약 기간 2026년 11월 15일 ~ 17일"
+    page = extraction("MEDICATION", "하루 3회", row + "\n" + period).model_copy(
+        update={"raw_text": row + "\n다른 약품 B의 용법\n" + period}
+    )
+    rows = build_candidates(uuid4(), {1: page}, declared_doc_type="PRESCRIPTION")
+    assert len(rows) == 1
+    assert rows[0].description == "원문 1쪽: " + row + "\n" + period
+    assert rows[0].due_at is None
+
+
+@pytest.mark.parametrize("interruption", ["", "\n2 다른 약품 2 mL\n"])
+def test_wrapped_time_requires_contiguous_medication_evidence(interruption):
+    row = "1 약품 A 시럽 5 mL 3 회 식후 30분\n저녁 복용 시각\n"
+    guidance = "· 투약 기간 2026년 11월 15일 ~ 17일"
+    page = extraction("MEDICATION", None, row + "18:30\n" + guidance).model_copy(
+        update={"raw_text": row + interruption + "18:30\n일정 확인\n" + guidance}
+    )
+    assert bool(build_candidates(uuid4(), {1: page})) is (not interruption)
+
+
+@pytest.mark.parametrize(("dose", "expected"), [("5 mL", True), ("9 mL", False), ("2 mL", False)])
+def test_medication_columns_must_all_belong_to_the_same_numbered_row(dose, expected):
+    source = f"1 약품 A 시럽 100mg/5mL\n소염 · 진통제 (내복)\n{dose}\n3 회\n식후 30분"
+    raw = (
+        "1 약품 A 시럽 100mg/5mL 5 mL 3 회 식후 30분\n"
+        "소염 · 진통제 (내복) 아침 08:00\n"
+        "2 약품 B 9 mL 2 회\n"
+        "· 보충 안내: 2 mL"
+    )
+    page = extraction("MEDICATION", None, source).model_copy(update={"raw_text": raw})
+    assert bool(build_candidates(uuid4(), {1: page})) is expected
+
+
+@pytest.mark.parametrize("source", [
+    "약품 A 시럽 5mL 하루 3회\n원문에 없는 복용 지시입니다",
+    "투약 기간 2026년 11월 15일\n약품 A 시럽 5mL 하루 3회",
+    "약품\nB\n시럽\n5mL\n하루\n3회",
+])
+def test_separated_medication_evidence_rejects_invention_reordering_and_fragments(source):
+    page = extraction("MEDICATION", "하루 3회", source).model_copy(update={
+        "raw_text": "약품 A 시럽 5mL 하루 3회\n다른 약품 B\n투약 기간 2026년 11월 15일"
+    })
+    assert not build_candidates(uuid4(), {1: page})
+
+
+@pytest.mark.parametrize(
+    ("declared_type", "page_type", "expected"),
+    [
+        ("MEDICAL", "PRESCRIPTION", False),
+        ("MEDICAL", "DISCHARGE_GUIDE", False),
+        ("PRESCRIPTION", "PRESCRIPTION", True),
+        ("PRESCRIPTION", "UNKNOWN", True),
+        ("PRESCRIPTION", "DISCHARGE_GUIDE", False),
+        (None, "DISCHARGE_GUIDE", False),
+        (None, "PRESCRIPTION", True),
+    ],
+)
+def test_only_prescription_context_produces_a_medication_candidate(
+    declared_type, page_type, expected
+):
+    page = extraction(
+        "MEDICATION", "하루 2회", "가상 약품을 하루 2회 복용"
+    ).model_copy(update={"document_type": page_type})
+    items = build_candidates(uuid4(), {1: page}, declared_doc_type=declared_type)
+    assert [item.type for item in items] == (["MEDICATION"] if expected else [])
+
+
+def test_general_medical_document_still_produces_a_test_schedule_candidate():
+    rows = build_candidates(uuid4(), {1: extraction()}, declared_doc_type="MEDICAL")
+    assert rows[0].type == "TEST"
 
 
 def test_document_notices_do_not_hide_a_clinical_caution():

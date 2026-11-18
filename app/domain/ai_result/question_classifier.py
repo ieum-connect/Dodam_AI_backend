@@ -16,6 +16,16 @@ class QuestionClassifier:
             return QuestionType.LAB_REFERENCE_RANGE
         if any(word in text for word in ("약", "복용", "처방")):
             return QuestionType.MEDICATION_SUMMARY
+        visit_checklist_words = (
+            "의사에게 물어",
+            "의사 선생님께 물어",
+            "진료 질문",
+            "질문 정리",
+            "물어볼 질문",
+            "상담 질문",
+        )
+        if any(word in text for word in visit_checklist_words):
+            return QuestionType.VISIT_CHECKLIST
         if any(word in text for word in ("재진", "일정", "검사 언제", "예약", "예방접종", "접종")):
             return QuestionType.FOLLOW_UP_SCHEDULE
         if any(word in text for word in ("근거", "원문", "몇 쪽", "출처")):
